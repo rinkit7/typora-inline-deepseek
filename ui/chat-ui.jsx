@@ -85,7 +85,7 @@ function App({services}) {
   const {session,actions,appearance,detached,gestures} = services;
   const state = useSyncExternalStore(session.subscribe,session.getSnapshot,session.getSnapshot);
   const [background,setBackground] = useState(() => appearance.loadReaderOpacity());
-  const width = useSyncExternalStore(gestures.subscribe,gestures.getSnapshot,gestures.getSnapshot);
+  const {width,height} = useSyncExternalStore(gestures.subscribe,gestures.getSnapshot,gestures.getSnapshot);
   const [font,setFont] = useState(() => appearance.loadReaderFont());
   const [paused,setPaused] = useState(false), [opacity,setOpacity] = useState(() => appearance.loadOpacity());
   const [pinned,setPinned] = useState(() => appearance.loadPinned ? appearance.loadPinned() : false);
@@ -157,7 +157,10 @@ function App({services}) {
   const transparent = state.transparent && !detached;
   return <Services.Provider value={services}><AssistantRuntimeProvider runtime={runtime}>
     <section aria-label="DeepSeek 选区问答" className={`ds-shell ${transparent ? "ds-transparent" : ""} ${state.view === "web" ? "ds-web" : ""} ${detached ? "ds-detached" : ""}`} style={{"--card-alpha":`${background}%`,"--reader-font":`${font}px`}}>
-      {!detached && <>{["left","right"].map(edge => <div key={edge} className={`ds-resize-edge ds-resize-${edge}`} role="separator" aria-label={edge === "left" ? "拖动左边框调整宽度" : "拖动右边框调整宽度"} aria-orientation="vertical" aria-valuemin={300} aria-valuemax={640} aria-valuenow={width} tabIndex={0} title="拖动调整宽度"/>)}</>}
+      {!detached && <>{["left","right","top","bottom"].map(edge => {
+        const vertical = edge === "top" || edge === "bottom", label = `拖动${{left:"左",right:"右",top:"上",bottom:"下"}[edge]}边框调整${vertical ? "高度" : "宽度"}`;
+        return <div key={edge} className={`ds-resize-edge ds-resize-${edge}`} role="separator" aria-label={label} aria-orientation={vertical ? "horizontal" : "vertical"} aria-valuemin={vertical ? 320 : 300} aria-valuemax={vertical ? 12000 : 640} aria-valuenow={vertical ? height : width} tabIndex={0} title={label}/>;
+      })}</>}
       <div className="ds-header">
         <div className="ds-brand"><span>✦</span><div><strong>DeepSeek</strong><small>选区问答</small></div></div>
         <div className="ds-header-actions"><button type="button" className="ds-tab" aria-pressed={state.view === "chat"} onClick={() => session.setView("chat")}>对话</button><button type="button" className="ds-tab" aria-pressed={state.view === "web"} onClick={() => session.setView("web")}>网页</button>

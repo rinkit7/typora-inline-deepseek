@@ -12,8 +12,8 @@ export function createWorkspaceChat(plugin,options = {}) {
   const detached = !!options.detachedHost;
   const targets = new Map();
   let disposed = false, transferring = false, pressedTarget = null;
-  let geometry = {left:null,top:48,width:460,height:640}, ui, interaction = null;
   const appearance = createAppearanceStore(runtime);
+  let geometry = {left:null,top:48,width:460,height:appearance.loadReaderHeight()}, ui, interaction = null;
   const node = view.createElement("div");
   node.id = "deepseek-workspace";
   node.style.cssText = "position:fixed;right:18px;top:48px;width:min(460px,calc(100vw - 36px));height:calc(100vh - 90px);z-index:999990;pointer-events:none;isolation:isolate;";
@@ -43,10 +43,10 @@ export function createWorkspaceChat(plugin,options = {}) {
     if (detached) return;
     startInteraction(rect,"drag");
   }
-  function startInteraction(rect,type) {
+  function startInteraction(rect,type,edge) {
     if (detached) return;
     if (interaction) endDrag();
-    interaction = {type,origin:rect,left:rect.left,top:rect.top,width:type === "drag" ? geometry.width : rect.width,maxLeft:Math.max(0,innerWidth - rect.width - 18),maxTop:Math.max(18,innerHeight - rect.height - 18)};
+    interaction = {type,origin:rect,left:rect.left,top:rect.top,width:type === "resize" && (edge === "left" || edge === "right") ? rect.width : geometry.width,height:geometry.height,maxLeft:Math.max(0,innerWidth - rect.width - 18),maxTop:Math.max(18,innerHeight - rect.height - 18)};
     if (type === "drag") node.style.willChange = "transform";
     // Render geometry on the real card each frame. Pause only background
     // extraction and editor selection capture, leaving the webpage visible.
@@ -63,7 +63,7 @@ export function createWorkspaceChat(plugin,options = {}) {
   }
   function endDrag() {
     if (!interaction) return;
-    geometry = {...geometry,left:interaction.left,top:interaction.top,width:interaction.width};
+    geometry = {...geometry,left:interaction.left,top:interaction.top,width:interaction.width,height:interaction.height};
     interaction = null;
     applyGeometry();
     node.style.transform = ""; node.style.willChange = "";
@@ -90,7 +90,7 @@ export function createWorkspaceChat(plugin,options = {}) {
   const tracker = detached ? null : createSelectionTracker({host,getIdentity:() => plugin.getCurrentDocumentIdentity(),view,runtime});
   const targetId = () => runtime.reqnode("crypto").randomUUID();
   function diagnose(event) {
-    writeDiagnostic(runtime,"runtime-status.json",{plugin:"DeepSeek 选区问答",version:"2.1.0",dragEngine:"native-capture-v1",geometryRendering:"live",layout:"assistant-ui",detached,event,quoted:!!session.getSnapshot().quote,messageCount:session.getSnapshot().messages.length,time:new Date().toISOString()});
+    writeDiagnostic(runtime,"runtime-status.json",{plugin:"DeepSeek 选区问答",version:"2.1.1",dragEngine:"native-capture-v1",geometryRendering:"live",layout:"assistant-ui",detached,event,quoted:!!session.getSnapshot().quote,messageCount:session.getSnapshot().messages.length,time:new Date().toISOString()});
   }
   function remember(target) {
     if (!target?.text) return null;
@@ -191,7 +191,7 @@ export function createWorkspaceChat(plugin,options = {}) {
       onAnswerSettled:notifyAnswerSettled,
       motionStats:stats => writeDiagnostic(runtime,"drag-performance.json",stats),
       startDrag,drag:moveDrag,endDrag,
-      startResize:rect => startInteraction(rect,"resize"),endResize:endDrag,
+      startResize:(rect,edge) => startInteraction(rect,"resize",edge),endResize:endDrag,
       getPosition:() => node.getBoundingClientRect(),
       resize:(width,left) => {
         if (detached) return;
@@ -200,8 +200,16 @@ export function createWorkspaceChat(plugin,options = {}) {
           geometry = {...geometry,width,left}; applyGeometry();
         } else {geometry = {...geometry,width,left}; applyGeometry();}
       },
+      resizeHeight:(height,top) => {
+        if (detached) return;
+        if (interaction?.type === "resize") {
+          interaction.height = height; interaction.top = top;
+        }
+        geometry = {...geometry,height,top}; applyGeometry();
+      },
       webBounds:rect => {const outer = node.getBoundingClientRect(); if (rect.height > 0) {webpage.style.top = `${rect.top - outer.top}px`; webpage.style.height = `${rect.height}px`; }},
-      width:value => {if (!detached) {geometry.width = value; applyGeometry();}}
+      width:value => {if (!detached) {geometry.width = value; applyGeometry();}},
+      height:value => {if (!detached) {geometry.height = value; applyGeometry();}}
     }});
   const launch = view.createElement("button");
   launch.id = "deepseek-workspace-launch"; launch.textContent = "✦ DeepSeek 问答";

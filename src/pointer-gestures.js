@@ -1,8 +1,8 @@
 // Own geometry input before it reaches Typora's document handlers. React is
-// notified only after a completed width change, never for pointer movement.
+// notified only after a completed size change, never for pointer movement.
 export function createPointerGestures({shadow,actions,appearance,detached,runtime = window}) {
-  let width = appearance.loadReaderWidth(), active = null, frame = null, pending = null;
-  let timer = null, saveWidth = null, report = null, disposed = false;
+  let size = {width:appearance.loadReaderWidth(),height:appearance.loadReaderHeight?.() ?? 640}, active = null, frame = null, pending = null;
+  let timer = null, saveWidth = null, saveHeight = null, report = null, disposed = false;
   const listeners = new Set(), bindings = [];
   const now = () => runtime.performance.now();
   const pathOf = event => event.composedPath();
@@ -18,10 +18,17 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
   }
   const stop = event => {event.stopImmediatePropagation(); if (event.cancelable) event.preventDefault();};
   const matches = event => active && (active.id == null || event.pointerId == null || event.pointerId === active.id);
-  const publish = value => {width = value; for (const callback of listeners) callback();};
+  const vertical = edge => edge === "top" || edge === "bottom";
+  const edgeOf = handle => ["left","right","top","bottom"].find(edge => handle.classList.contains(`ds-resize-${edge}`));
+  const publish = (edge,value) => {size = {...size,[vertical(edge) ? "height" : "width"]:value}; for (const callback of listeners) callback();};
+  function rememberSize(edge,value) {
+    publish(edge,value);
+    if (vertical(edge)) saveHeight = value; else saveWidth = value;
+  }
   function settle() {
     timer = null;
     if (saveWidth !== null) {appearance.saveReaderWidth(saveWidth); saveWidth = null;}
+    if (saveHeight !== null) {appearance.saveReaderHeight?.(saveHeight); saveHeight = null;}
     if (report) {actions.motionStats?.(report); report = null;}
   }
   function defer() {if (timer !== null) runtime.clearTimeout(timer); timer = runtime.setTimeout(settle,120);}
@@ -47,10 +54,13 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
     });
   }
   function resizeTo(edge,start,delta) {
-    const right = start.left + start.width;
-    const maximum = Math.max(0,Math.min(640,runtime.innerWidth - 36,edge === "left" ? right - 18 : runtime.innerWidth - 18 - start.left));
-    const value = Math.round(Math.max(Math.min(300,maximum),Math.min(maximum,start.width + (edge === "left" ? -delta : delta))));
-    actions.resize(value,edge === "left" ? right - value : start.left);
+    const isVertical = vertical(edge), leading = edge === "left" || edge === "top";
+    const origin = isVertical ? start.top : start.left, extent = isVertical ? start.height : start.width;
+    const end = origin + extent, viewport = isVertical ? runtime.innerHeight : runtime.innerWidth;
+    const maximum = Math.max(0,Math.min(isVertical ? 12000 : 640,viewport - 36,leading ? end - 18 : viewport - 18 - origin));
+    const value = Math.round(Math.max(Math.min(isVertical ? 320 : 300,maximum),Math.min(maximum,extent + (leading ? -delta : delta))));
+    if (isVertical) actions.resizeHeight(value,leading ? end - value : origin);
+    else actions.resize(value,leading ? end - value : origin);
     return value;
   }
   function finish(reason) {
@@ -59,7 +69,7 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
     const current = active; active = null;
     try {
       if (current.edge) {
-        actions.endResize?.(); publish(current.width); saveWidth = current.width;
+        actions.endResize?.(); rememberSize(current.edge,current.size);
       } else actions.endDrag?.();
     } finally {
       current.shield.remove();
@@ -79,16 +89,16 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
     // A previous release may have scheduled persistence. Never let that
     // synchronous filesystem work fire in the middle of the next gesture.
     if (timer !== null) {runtime.clearTimeout(timer); timer = null;}
-    const edge = source.classList.contains("ds-resize-edge") ? (source.classList.contains("ds-resize-left") ? "left" : "right") : null;
+    const edge = source.classList.contains("ds-resize-edge") ? edgeOf(source) : null;
     const rect = actions.getPosition(), shield = shadow.ownerDocument.createElement("div");
     shield.className = edge ? "ds-resize-shield" : "ds-drag-shield";
-    shield.style.cssText = `position:fixed;inset:0;z-index:999996;background:transparent;touch-action:none;user-select:none;cursor:${edge ? "ew-resize" : "move"};`;
+    shield.style.cssText = `position:fixed;inset:0;z-index:999996;background:transparent;touch-action:none;user-select:none;cursor:${edge ? vertical(edge) ? "ns-resize" : "ew-resize" : "move"};`;
     shield.setAttribute("aria-hidden","true");
     shadow.ownerDocument.body.appendChild(shield);
     shadow.querySelector(".ds-settings")?.removeAttribute("open");
-    active = {source,shield,edge,rect,x:event.clientX,y:event.clientY,width,
+    active = {source,shield,edge,rect,x:event.clientX,y:event.clientY,size:vertical(edge) ? size.height : size.width,
       id:event.pointerId ?? null,started:now(),moves:0,mouseEvents:0,frames:0,slowFrames:0,maxFrameGapMs:0,maxQueueMs:0,lastFrame:null};
-    if (edge) actions.startResize?.(rect); else actions.startDrag?.(rect);
+    if (edge) actions.startResize?.(rect,edge); else actions.startDrag?.(rect);
     if (active.id != null) source.setPointerCapture?.(active.id);
   }
   function move(event) {
@@ -97,7 +107,7 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
     const current = active, x = event.clientX, y = event.clientY; current.moves++;
     schedule(() => {
       if (active !== current) return;
-      if (current.edge) current.width = resizeTo(current.edge,current.rect,x - current.x);
+      if (current.edge) current.size = resizeTo(current.edge,current.rect,vertical(current.edge) ? y - current.y : x - current.x);
       else actions.drag(current.rect.left + x - current.x,current.rect.top + y - current.y);
     });
   }
@@ -109,21 +119,22 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
     if (handle && !isControl(event,handle)) stop(event);
   }
   function key(event) {
-    if (detached || !["ArrowLeft","ArrowRight"].includes(event.key)) return;
+    if (detached) return;
     const handle = handleOf(event);
     if (!handle?.classList.contains("ds-resize-edge")) return;
+    const edge = edgeOf(handle), keys = vertical(edge) ? ["ArrowUp","ArrowDown"] : ["ArrowLeft","ArrowRight"];
+    if (!keys.includes(event.key)) return;
     stop(event);
-    const edge = handle.classList.contains("ds-resize-left") ? "left" : "right";
-    const value = resizeTo(edge,actions.getPosition(),(event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 40 : 10));
-    publish(value); saveWidth = value; defer();
+    const value = resizeTo(edge,actions.getPosition(),(event.key === keys[0] ? -1 : 1) * (event.shiftKey ? 40 : 10));
+    rememberSize(edge,value); defer();
   }
   function bind(name,handler) {runtime.addEventListener(name,handler,{capture:true,passive:false}); bindings.push([name,handler]);}
   bind("pointerdown",start); bind("pointermove",move);
   for (const name of ["pointerup","pointercancel","lostpointercapture"]) bind(name,end);
   for (const name of ["mousedown","mousemove","mouseup","dragstart","selectstart"]) bind(name,mouse);
   bind("keydown",key); bind("blur",() => finish("blur")); bind("resize",() => finish("viewport-resize"));
-  actions.width(width);
-  return {subscribe(callback) {listeners.add(callback); return () => listeners.delete(callback);},getSnapshot:() => width,
+  actions.width(size.width); actions.height?.(size.height);
+  return {subscribe(callback) {listeners.add(callback); return () => listeners.delete(callback);},getSnapshot:() => size,
     dispose() {
       disposed = true;
       if (frame !== null) runtime.cancelAnimationFrame(frame);

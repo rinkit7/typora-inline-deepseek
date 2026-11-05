@@ -19,6 +19,12 @@ export function normalizeReaderWidth(value) {
   return Number.isFinite(number) ? Math.max(300,Math.min(640,Math.round(number))) : 440;
 }
 
+export function normalizeReaderHeight(value) {
+  if (!["number","string"].includes(typeof value) || String(value).trim() === "") return 640;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(320,Math.min(12000,Math.round(number))) : 640;
+}
+
 export function normalizeReaderFont(value) {
   if (!["number","string"].includes(typeof value) || String(value).trim() === "") return 16;
   const number = Number(value);
@@ -62,6 +68,8 @@ export function createAppearanceStore(runtime) {
     saveReaderOpacity:value => save("readerOpacity",normalizeReaderOpacity(value)),
     loadReaderWidth:() => normalizeReaderWidth(read().readerWidth),
     saveReaderWidth:value => save("readerWidth",normalizeReaderWidth(value)),
+    loadReaderHeight:() => normalizeReaderHeight(read().readerHeight),
+    saveReaderHeight:value => save("readerHeight",normalizeReaderHeight(value)),
     loadReaderFont:() => normalizeReaderFont(read().readerFont),
     saveReaderFont:value => save("readerFont",normalizeReaderFont(value)),
     loadPinned:() => read().pinned === true,

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {createAppearanceStore,normalizeDetachedGeometry,normalizeOpacity,normalizeReaderOpacity,normalizeReaderWidth,normalizeReaderFont} from "../src/appearance.js";
+import {createAppearanceStore,normalizeDetachedGeometry,normalizeOpacity,normalizeReaderOpacity,normalizeReaderWidth,normalizeReaderHeight,normalizeReaderFont} from "../src/appearance.js";
 import {DETACHED_WINDOW_TITLE,setNativeOpacity} from "../src/detached-session.js";
 
 test("opacity defaults and limits keep the window usable with malformed preferences", () => {
@@ -51,6 +51,22 @@ test("reader background and width persist independently of whole-window opacity"
   assert.equal(normalizeReaderWidth(0),300); assert.equal(normalizeReaderWidth(1000),640); assert.equal(normalizeReaderWidth(null),440);
   assert.equal(store.loadReaderFont(),16); store.saveReaderFont(19); assert.equal(store.loadReaderFont(),19);
   assert.equal(normalizeReaderFont(2),14); assert.equal(normalizeReaderFont(50),22); assert.equal(normalizeReaderFont("bad"),16);
+});
+
+test("reader height survives reopening and rejects malformed or unreachable preferences", () => {
+  let data = '{"readerWidth":440,"readerFont":19}';
+  const runtime = {reqnode:() => ({mkdirSync() {},readFileSync:() => data,writeFileSync:(file,value) => {data = value;}})};
+  const first = createAppearanceStore(runtime);
+  assert.equal(first.loadReaderHeight(),640);
+  assert.equal(first.saveReaderHeight(520.4),true);
+  const reopened = createAppearanceStore(runtime);
+  assert.equal(reopened.loadReaderHeight(),520);
+  assert.equal(reopened.loadReaderWidth(),440);
+  assert.equal(reopened.loadReaderFont(),19);
+  for (const value of [undefined,null,"","  ",false,{},NaN,Infinity,"bad"]) assert.equal(normalizeReaderHeight(value),640);
+  assert.equal(normalizeReaderHeight(100),320);
+  assert.equal(normalizeReaderHeight(99999),12000);
+  assert.equal(normalizeReaderHeight("720"),720);
 });
 
 test("detached geometry normalizer rejects phantom and malformed rects", () => {

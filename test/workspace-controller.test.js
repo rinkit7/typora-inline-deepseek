@@ -4,12 +4,13 @@ import crypto from "node:crypto";
 import {browserEnvironment} from "./helpers/browser-env.js";
 import {TyporaHost} from "../src/typora-host.js";
 
-test("edge dragging anchors the opposite side, respects bounds and remembers width across workspaces", async () => {
+test("four edge handles resize live, anchor the opposite side and remember sizes across workspaces", async () => {
   const env = browserEnvironment();
   let controller, preferences = {};
   try {
     const {document,window} = env;
     Object.defineProperty(window,"innerWidth",{value:1280,configurable:true});
+    Object.defineProperty(window,"innerHeight",{value:960,writable:true,configurable:true});
     window.reqnode = name => name === "crypto" ? crypto : {
       readFileSync:() => JSON.stringify(preferences),mkdirSync() {},
       writeFileSync(file,value) {if (file.endsWith("preferences.json")) preferences = JSON.parse(value);}
@@ -118,10 +119,82 @@ test("edge dragging anchors the opposite side, respects bounds and remembers wid
     assert.equal(node.getBoundingClientRect().top,18);
     globalThis.innerHeight = 960; window.dispatchEvent(new window.Event("resize"));
     assert.equal(node.getBoundingClientRect().height,before.height,"restore the preferred height when space returns");
+    const top = await findByRole(mount,"separator",{name:"拖动上边框调整高度"});
+    const bottom = await findByRole(mount,"separator",{name:"拖动下边框调整高度"});
+    const verticalPointer = (target,type,y,button = 0) => {
+      const event = new window.MouseEvent(type,{composed:true,bubbles:true,cancelable:true,clientX:30,clientY:y,button});
+      Object.defineProperty(event,"pointerId",{value:1}); return fireEvent(target,event);
+    };
+    const initial = node.getBoundingClientRect();
+    verticalPointer(bottom,"pointerdown",initial.bottom);
+    verticalPointer(bottom,"pointermove",initial.bottom + 100);
+    await waitFor(() => assert.equal(node.getBoundingClientRect().height,740));
+    assert.equal(node.getBoundingClientRect().top,initial.top,"the top stays fixed while dragging the bottom");
+    assert.equal(node.getBoundingClientRect().width,630);
+    assert.equal(node.style.getPropertyValue("--workspace-height"),"740px");
+    assert.equal(preferences.readerHeight,undefined,"live resizing does not save preferences");
+    assert.match(document.querySelector(".ds-resize-shield").style.cursor,/ns-resize/);
+    verticalPointer(bottom,"pointerup",initial.bottom + 100);
+    await waitFor(() => assert.equal(preferences.readerHeight,740));
+    const anchoredBottom = node.getBoundingClientRect().bottom;
+    verticalPointer(top,"pointerdown",initial.top);
+    verticalPointer(top,"pointermove",initial.top + 100);
+    await waitFor(() => assert.equal(node.getBoundingClientRect().height,640));
+    assert.equal(node.getBoundingClientRect().bottom,anchoredBottom,"the bottom stays fixed while dragging the top");
+    verticalPointer(top,"pointercancel",initial.top + 100);
+    await waitFor(() => assert.equal(preferences.readerHeight,640));
+    verticalPointer(top,"pointermove",-10000);
+    assert.equal(node.getBoundingClientRect().height,640,"cancelled gestures stop resizing");
+    verticalPointer(top,"pointerdown",initial.top + 100);
+    verticalPointer(top,"pointermove",10000);
+    await waitFor(() => assert.equal(node.getBoundingClientRect().height,320));
+    assert.equal(node.getBoundingClientRect().bottom,anchoredBottom);
+    verticalPointer(top,"pointerup",10000);
+    verticalPointer(top,"pointerdown",node.getBoundingClientRect().top);
+    verticalPointer(top,"pointermove",-10000);
+    await waitFor(() => assert.equal(node.getBoundingClientRect().top,18));
+    assert.equal(node.getBoundingClientRect().bottom,anchoredBottom);
+    verticalPointer(top,"lostpointercapture",-10000);
+    const expanded = node.getBoundingClientRect();
+    verticalPointer(bottom,"pointerdown",expanded.bottom);
+    verticalPointer(bottom,"pointermove",10000);
+    await waitFor(() => assert.equal(node.getBoundingClientRect().bottom,942));
+    verticalPointer(bottom,"pointerup",10000);
+    assert.equal(node.getBoundingClientRect().height,924,"limit height to the viewport with margins");
+    fireEvent.keyDown(bottom,{key:"ArrowUp",shiftKey:true});
+    await waitFor(() => assert.equal(preferences.readerHeight,884));
+    const keyboardBottom = node.getBoundingClientRect().bottom;
+    fireEvent.keyDown(top,{key:"ArrowDown"});
+    await waitFor(() => assert.equal(preferences.readerHeight,874));
+    assert.equal(node.getBoundingClientRect().bottom,keyboardBottom);
+    globalThis.innerWidth = 400;
+    Object.defineProperty(window,"innerWidth",{value:400,configurable:true});
+    window.dispatchEvent(new window.Event("resize"));
+    assert.equal(node.getBoundingClientRect().width,364);
+    const currentTop = node.getBoundingClientRect().top;
+    verticalPointer(bottom,"pointerdown",node.getBoundingClientRect().bottom);
+    verticalPointer(bottom,"pointermove",currentTop + 520);
+    verticalPointer(bottom,"pointerup",currentTop + 520);
+    await waitFor(() => assert.equal(preferences.readerHeight,520));
+    assert.equal(preferences.readerWidth,630);
+    globalThis.innerWidth = 1280;
+    Object.defineProperty(window,"innerWidth",{value:1280,configurable:true});
+    window.dispatchEvent(new window.Event("resize"));
+    assert.equal(node.getBoundingClientRect().width,630,"height resizing in a narrow viewport must retain the preferred width");
     controller.dispose(); controller = null;
     ({node,mount} = setup());
     await findByRole(mount,"separator",{name:"拖动左边框调整宽度"});
     await waitFor(() => assert.equal(node.getBoundingClientRect().width,630));
+    assert.equal(node.getBoundingClientRect().height,520,"restore a custom height in a new workspace");
+    globalThis.innerHeight = window.innerHeight = 400; window.dispatchEvent(new window.Event("resize"));
+    assert.equal(node.getBoundingClientRect().height,364);
+    assert.equal(preferences.readerHeight,520,"a smaller viewport cannot overwrite the preferred height");
+    controller.dispose(); controller = null;
+    ({node,mount} = setup());
+    await findByRole(mount,"separator",{name:"拖动下边框调整高度"});
+    assert.equal(node.getBoundingClientRect().height,364);
+    globalThis.innerHeight = window.innerHeight = 960; window.dispatchEvent(new window.Event("resize"));
+    assert.equal(node.getBoundingClientRect().height,520);
   } finally {controller?.dispose(); env.dispose();}
 });
 

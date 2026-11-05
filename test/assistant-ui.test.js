@@ -83,15 +83,15 @@ test("pointer bursts update once per frame and release flushes the final positio
   const env = browserEnvironment('<body><div id="host"></div></body>');
   const session = createChatSession();
   let ui, sequence = 0, reads = 0;
-  const frames = new Map(), moves = [], sizes = [], saved = [], ended = [];
+  const frames = new Map(), moves = [], sizes = [], heights = [], saved = [], savedHeights = [], ended = [];
   try {
     const {mountChatUI} = await import("../dist/chat-ui.js");
     const {fireEvent,findByRole,waitFor} = await import("@testing-library/dom");
     const shadow = env.document.getElementById("host").attachShadow({mode:"open"});
     const mount = env.document.createElement("div"); shadow.appendChild(mount);
     ui = mountChatUI(mount,shadow,{session,detached:false,
-      appearance:{loadReaderOpacity:() => 80,loadReaderWidth:() => 440,loadReaderFont:() => 16,loadOpacity:() => 100,saveReaderWidth:value => saved.push(value)},
-      actions:{width() {},getPosition:() => {reads++; return {left:200,top:48,width:440,height:640};},startDrag() {},endDrag:() => ended.push(true),drag:(x,y) => moves.push([x,y]),resize:(width,left) => sizes.push([width,left])}});
+      appearance:{loadReaderOpacity:() => 80,loadReaderWidth:() => 440,loadReaderHeight:() => 640,loadReaderFont:() => 16,loadOpacity:() => 100,saveReaderWidth:value => saved.push(value),saveReaderHeight:value => savedHeights.push(value)},
+      actions:{width() {},height() {},getPosition:() => {reads++; return {left:200,top:48,width:440,height:640};},startDrag() {},endDrag:() => ended.push(true),drag:(x,y) => moves.push([x,y]),resize:(width,left) => sizes.push([width,left]),resizeHeight:(height,top) => heights.push([height,top])}});
     await findByRole(mount,"textbox",{name:"输入问题"});
     env.window.requestAnimationFrame = callback => {frames.set(++sequence,callback); return sequence;};
     env.window.cancelAnimationFrame = id => frames.delete(id);
@@ -124,6 +124,25 @@ test("pointer bursts update once per frame and release flushes the final positio
     assert.deepEqual(sizes.at(-1),[560,200]);
     await waitFor(() => assert.deepEqual(saved,[560],"save once after release or focus loss"));
     await waitFor(() => assert.equal(right.getAttribute("aria-valuenow"),"560"));
+    Object.defineProperty(env.window,"innerHeight",{value:960,configurable:true});
+    const bottom = await findByRole(mount,"separator",{name:"拖动下边框调整高度"});
+    assert.equal(bottom.getAttribute("aria-orientation"),"horizontal");
+    pointer(bottom,"pointerdown",500,688);
+    for (let i = 1; i <= 120; i++) pointer(bottom,"pointermove",500,688 + i);
+    assert.equal(frames.size,1);
+    assert.equal(heights.length,0);
+    assert.equal(reads,3,"height changes also measure only once per gesture");
+    frame();
+    assert.deepEqual(heights,[[760,48]]);
+    assert.equal(bottom.getAttribute("aria-valuenow"),"640","height changes must not rerender React on each frame");
+    pointer(bottom,"pointermove",500,838);
+    pointer(bottom,"pointerup",500,838);
+    assert.deepEqual(heights.at(-1),[790,48]);
+    assert.equal(frames.size,0);
+    assert.deepEqual(savedHeights,[],"height persistence stays outside the input handler");
+    await waitFor(() => assert.deepEqual(savedHeights,[790]));
+    await waitFor(() => assert.equal(bottom.getAttribute("aria-valuenow"),"790"));
+    assert.deepEqual(saved,[560],"vertical resizing cannot overwrite the saved width");
     pointer(header,"pointerdown",220);
     pointer(header,"pointermove",250);
     ui.dispose(); ui = null;
