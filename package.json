@@ -1,0 +1,49 @@
+{
+  "name": "typora-inline-deepseek",
+  "version": "2.1.0",
+  "type": "module",
+  "description": "DeepSeek web chat inside Typora for Windows",
+  "author": "typora-inline-deepseek contributors",
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@assistant-ui/react": "0.15.32",
+    "@assistant-ui/react-markdown": "0.14.24",
+    "katex": "0.16.47",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "rehype-katex": "7.0.1",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "10.4.2",
+    "esbuild": "0.28.2",
+    "jsdom": "29.1.1"
+  },
+  "files": [
+    "main.js",
+    "manifest.json",
+    "install.ps1",
+    "src/",
+    "ui/",
+    "native/",
+    "bin/",
+    "dist/",
+    "scripts/build.mjs",
+    "scripts/build-native.ps1",
+    "scripts/check.mjs",
+    "test/",
+    "vendor-licenses/",
+    "THIRD_PARTY_NOTICES.md",
+    "CHANGELOG.md"
+  ]
+}

@@ -1,0 +1,9 @@
+node_modules/
+.cache/
+*.log
+data/
+backups/
+*.zip
+*.bundle
+*.cpuprofile
+*.heapprofile

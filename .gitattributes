@@ -1,0 +1,15 @@
+*.js text eol=lf
+*.jsx text eol=lf
+*.mjs text eol=lf
+*.css text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.exe binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+.gitattributes text eol=lf
+.gitignore text eol=lf
+# Preserve the upstream formatting of generated legal notices.
+dist/*.LEGAL.txt -whitespace

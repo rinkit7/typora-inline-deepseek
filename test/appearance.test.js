@@ -1,0 +1,79 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {createAppearanceStore,normalizeDetachedGeometry,normalizeOpacity,normalizeReaderOpacity,normalizeReaderWidth,normalizeReaderFont} from "../src/appearance.js";
+import {DETACHED_WINDOW_TITLE,setNativeOpacity} from "../src/detached-session.js";
+
+test("opacity defaults and limits keep the window usable with malformed preferences", () => {
+  for (const value of [undefined,null,"", "  ","bad",NaN,Infinity,false,{}]) assert.equal(normalizeOpacity(value),100);
+  assert.equal(normalizeOpacity("75"),75);
+  assert.equal(normalizeOpacity(0),40);
+  assert.equal(normalizeOpacity(120),100);
+});
+
+test("opacity persists across store instances while retaining other preferences", () => {
+  let data = '{"other":"keep"}';
+  const fs = {mkdirSync() {},readFileSync:() => data,writeFileSync:(filename,value) => {data = value;}};
+  const runtime = {reqnode:() => fs};
+  const first = createAppearanceStore(runtime);
+  assert.equal(first.loadOpacity(),100);
+  assert.equal(first.saveOpacity(65),true);
+  assert.equal(createAppearanceStore(runtime).loadOpacity(),65);
+  assert.equal(JSON.parse(data).other,"keep");
+  first.saveOpacity(100);
+  assert.equal(createAppearanceStore(runtime).loadOpacity(),100);
+  data = 'invalid json';
+  assert.equal(first.loadOpacity(),100);
+  fs.writeFileSync = () => {throw Error("read only");};
+  assert.equal(first.saveOpacity(50),false);
+});
+
+test("native opacity targets only the exact helper window and rejects invalid requests", async () => {
+  const calls = [];
+  const runtime = {reqnode:name => name === "process" ? {execPath:"E:\\Typora\\Typora.exe"} : {
+    execFile(helper,args,options,callback) {calls.push({args,options}); callback(null,'{"opacityApplied":true,"opacity":75}');}
+  }};
+  const identifier = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  await setNativeOpacity(runtime,identifier,75);
+  assert.deepEqual(calls[0].args,[identifier,"E:\\Typora\\Typora.exe","--opacity","75","--title",DETACHED_WINDOW_TITLE]);
+  assert.equal(calls[0].options.windowsHide,true);
+  await assert.rejects(setNativeOpacity(runtime,"invalid",75),/标识无效/);
+  await assert.rejects(setNativeOpacity(runtime,identifier,0),/40%/);
+  assert.equal(calls.length,1);
+});
+
+test("reader background and width persist independently of whole-window opacity", () => {
+  let data = '{}';
+  const store = createAppearanceStore({reqnode:() => ({mkdirSync() {},readFileSync:() => data,writeFileSync:(file,value) => {data = value;}})});
+  assert.equal(store.loadReaderOpacity(),80); assert.equal(store.loadReaderWidth(),440);
+  store.saveOpacity(65); store.saveReaderOpacity(30); store.saveReaderWidth(320);
+  assert.equal(store.loadOpacity(),65); assert.equal(store.loadReaderOpacity(),30); assert.equal(store.loadReaderWidth(),320);
+  assert.equal(normalizeReaderOpacity(0),20); assert.equal(normalizeReaderOpacity("bad"),80);
+  assert.equal(normalizeReaderWidth(0),300); assert.equal(normalizeReaderWidth(1000),640); assert.equal(normalizeReaderWidth(null),440);
+  assert.equal(store.loadReaderFont(),16); store.saveReaderFont(19); assert.equal(store.loadReaderFont(),19);
+  assert.equal(normalizeReaderFont(2),14); assert.equal(normalizeReaderFont(50),22); assert.equal(normalizeReaderFont("bad"),16);
+});
+
+test("detached geometry normalizer rejects phantom and malformed rects", () => {
+  assert.equal(normalizeDetachedGeometry(null),null);
+  assert.equal(normalizeDetachedGeometry({x:-32000,y:-32000,width:1820,height:932}),null,"minimized phantom rect");
+  assert.equal(normalizeDetachedGeometry({x:30,y:30,width:100,height:100}),null,"too small");
+  assert.equal(normalizeDetachedGeometry({x:0,y:0,width:99999,height:932}),null,"too wide");
+  assert.equal(normalizeDetachedGeometry({x:"a",y:0,width:800,height:600}),null);
+  assert.deepEqual(normalizeDetachedGeometry({x:30.4,y:-10,width:1820.7,height:932}),{x:30,y:-10,width:1821,height:932});
+});
+
+test("pinned flag and detached geometry persist across store instances", () => {
+  let data = '{"other":"keep"}';
+  const fs = {mkdirSync() {},readFileSync:() => data,writeFileSync:(filename,value) => {data = value;}};
+  const runtime = {reqnode:() => fs};
+  const first = createAppearanceStore(runtime);
+  assert.equal(first.loadPinned(),false);
+  first.savePinned(true);
+  first.saveDetachedGeometry({x:120,y:80,width:1000,height:700});
+  const second = createAppearanceStore(runtime);
+  assert.equal(second.loadPinned(),true);
+  assert.deepEqual(second.loadDetachedGeometry(),{x:120,y:80,width:1000,height:700});
+  assert.equal(second.saveDetachedGeometry({x:-32000,y:-32000,width:800,height:600}),true);
+  assert.equal(JSON.parse(data).detachedGeometry,null,"phantom rects must not be stored");
+  assert.equal(JSON.parse(data).other,"keep");
+});
