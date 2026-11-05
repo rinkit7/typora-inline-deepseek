@@ -2,6 +2,22 @@
 
 Windows Typora 选区问答插件。使用 assistant-ui、React 和 Markdown/KaTeX 组件呈现对话，继续通过已登录的 DeepSeek 网页发送和接收问题，不需要 API Key。
 
+## 界面示例
+
+以下为在 Typora 中使用公开示例文本截取的实际界面。
+
+**选区问答**：引用正文提问，在文档旁阅读回答。
+
+![选区引用与 DeepSeek 问答](docs/screenshots/selection-chat.jpg)
+
+**自定义快捷提问**：分别编辑按钮名称和提问内容，可新增、删除或恢复默认。
+
+![自定义快捷提问设置](docs/screenshots/custom-prompts.jpg)
+
+**透明共读与阅读设置**：开启透明共读，调整回答底色和阅读字号。
+
+![透明共读、回答底色与阅读字号设置](docs/screenshots/transparent-reading.jpg)
+
 ## 使用
 
 1. 保存文档，关闭所有 Typora 窗口（包括独立问答小窗）后重开。
