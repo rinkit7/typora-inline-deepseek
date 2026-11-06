@@ -90,7 +90,7 @@ export function createWorkspaceChat(plugin,options = {}) {
   const tracker = detached ? null : createSelectionTracker({host,getIdentity:() => plugin.getCurrentDocumentIdentity(),view,runtime});
   const targetId = () => runtime.reqnode("crypto").randomUUID();
   function diagnose(event) {
-    writeDiagnostic(runtime,"runtime-status.json",{plugin:"DeepSeek 选区问答",version:"2.2.0",dragEngine:"native-capture-v1",geometryRendering:"live",layout:"assistant-ui",detached,event,quoted:!!session.getSnapshot().quote,messageCount:session.getSnapshot().messages.length,time:new Date().toISOString()});
+    writeDiagnostic(runtime,"runtime-status.json",{plugin:"DeepSeek 选区问答",version:"2.2.1",dragEngine:"native-capture-v1",geometryRendering:"live",layout:"assistant-ui",detached,event,quoted:!!session.getSnapshot().quote,messageCount:session.getSnapshot().messages.length,time:new Date().toISOString()});
   }
   function remember(target) {
     if (!target?.text) return null;
@@ -200,6 +200,7 @@ export function createWorkspaceChat(plugin,options = {}) {
       copy:async text => {if (!await plugin.copyTextToClipboard(text)) throw Error("复制失败。"); session.notify("回答已复制。");},
       insert,reload:() => provider.reload(),pause:value => provider.setPaused(value),
       opacity:value => options.onOpacity?.(value),
+      launcherVisible:value => setLauncherVisible(value),
       pin:value => options.onPin?.(value),
       onAnswerSettled:notifyAnswerSettled,
       motionStats:stats => writeDiagnostic(runtime,"drag-performance.json",stats),
@@ -227,6 +228,10 @@ export function createWorkspaceChat(plugin,options = {}) {
   const launch = view.createElement("button");
   launch.id = "deepseek-workspace-launch"; launch.textContent = "✦ DeepSeek 问答";
   launch.style.cssText = "position:fixed;bottom:70px;right:18px;z-index:999980;border:1px solid #7180a555;border-radius:10px;padding:8px 13px;background:var(--bg-color,#fff);color:var(--text-color,#253047);cursor:pointer";
+  function setLauncherVisible(value) {launch.hidden = !value; launch.style.display = value ? "" : "none";}
+  const refreshLauncher = () => setLauncherVisible(appearance.loadLauncherVisible());
+  refreshLauncher();
+  runtime.addEventListener("focus",refreshLauncher);
   launch.addEventListener("pointerdown",event => {pressedTarget = tracker?.capture(); event.preventDefault();});
   launch.addEventListener("click",() => {
     const selected = pressedTarget || tracker?.capture(); pressedTarget = null;
@@ -248,6 +253,7 @@ export function createWorkspaceChat(plugin,options = {}) {
     disposed = true; unsubscribe(); tracker?.dispose(); provider.dispose(); session.dispose(); ui.dispose();
     interaction = null;
     runtime.removeEventListener("resize",viewportResize);
+    runtime.removeEventListener("focus",refreshLauncher);
     disposeMenu?.(); view.removeEventListener("keydown",keydown,true); node.remove(); launch.remove(); targets.clear();
   }};
 }

@@ -60,6 +60,8 @@ export function createAppearanceStore(runtime) {
       } catch (_) { return false; }
   }
   return {
+    loadLauncherVisible:() => read().launcherVisible !== false,
+    saveLauncherVisible:value => save("launcherVisible",value !== false),
     loadQuickAsks:() => normalizeQuickAsks(read().quickAsks),
     saveQuickAsks:value => save("quickAsks",validateQuickAsks(value)),
     loadOpacity:() => normalizeOpacity(read().opacity),
