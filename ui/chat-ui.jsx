@@ -196,11 +196,11 @@ function App({services}) {
       })}</>}
       <div className="ds-header">
         <div className="ds-brand"><span>✦</span><div><strong>DeepSeek</strong><small>选区问答</small></div></div>
-        <div className="ds-header-actions"><button type="button" className="ds-tab" aria-pressed={state.view === "chat"} onClick={() => session.setView("chat")}>对话</button><button type="button" className="ds-tab" aria-pressed={state.view === "web"} onClick={() => session.setView("web")}>网页</button>
+        <div className="ds-header-actions"><button type="button" className="ds-tab" aria-pressed={!showingHistory && !editingQuickAsks && state.view === "chat"} onClick={() => {setShowingHistory(false); setEditingQuickAsks(false); session.setView("chat");}}>对话</button><button type="button" className="ds-tab" aria-pressed={!showingHistory && !editingQuickAsks && state.view === "web"} onClick={() => {setShowingHistory(false); setEditingQuickAsks(false); session.setView("web");}}>网页</button>
+          <button type="button" className="ds-tab" aria-label="历史问答" title="历史问答" aria-pressed={showingHistory} disabled={state.sending || state.responding} onClick={event => {setShowingHistory(true); setEditingQuickAsks(false); event.currentTarget.parentElement.querySelector("details")?.removeAttribute("open");}}>历史</button>
           <details className="ds-settings"><summary aria-label="更多设置">···</summary><div className="ds-settings-menu">
             <button type="button" onClick={() => run(session,actions.transfer)}>{detached ? "移回文档" : "独立窗口"}</button>
             <button type="button" onClick={() => run(session,actions.reload)}>刷新 DeepSeek 网页</button>
-            <button type="button" disabled={state.sending || state.responding} onClick={event => {setShowingHistory(true); setEditingQuickAsks(false); event.currentTarget.closest("details").removeAttribute("open");}}>历史问答</button>
             <button type="button" onClick={event => {setEditingQuickAsks(true); setShowingHistory(false); event.currentTarget.closest("details").removeAttribute("open");}}>快捷提问设置</button>
             <label className="ds-check"><input type="checkbox" checked={state.transparent} disabled={detached} onChange={event => session.setTransparent(event.target.checked)}/>透明共读</label>
             {detached && <p>透明共读在原文档内使用</p>}
