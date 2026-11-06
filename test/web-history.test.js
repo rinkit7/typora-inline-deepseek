@@ -83,9 +83,22 @@ test("history picker uses webpage records, preserves the draft and quote, and wr
     const mount = document.getElementById('deepseek-workspace').lastElementChild.shadowRoot.lastElementChild;
     const input = await findByRole(mount,'textbox',{name:'输入问题'});
     fireEvent.change(input,{target:{value:'尚未发送的草稿'}});
-    const showHistory = async () => {mount.querySelector('.ds-settings').open = true; fireEvent.click(await findByRole(mount,'button',{name:'历史问答',exact:true}));};
+    const showHistory = async () => {
+      const button = await findByRole(mount,'button',{name:'历史问答',exact:true});
+      assert.ok(button.closest('.ds-header-actions'));
+      assert.equal(button.closest('.ds-settings'),null,'history is a direct header entry');
+      assert.equal(mount.querySelector('.ds-settings').open,false);
+      fireEvent.click(button);
+      await waitFor(() => assert.equal(button.getAttribute('aria-pressed'),'true'));
+    };
     await showHistory(); await findByRole(mount,'region',{name:'历史问答'});
     fireEvent.click(await findByRole(mount,'button',{name:'返回对话'}));
+    assert.equal((await findByRole(mount,'textbox',{name:'输入问题'})).value,'尚未发送的草稿');
+    await showHistory();
+    fireEvent.click(await findByRole(mount,'button',{name:'网页',exact:true}));
+    await findByRole(mount,'generic',{name:'DeepSeek 网页区域'});
+    assert.equal(mount.querySelector('.ds-history'),null);
+    fireEvent.click(await findByRole(mount,'button',{name:'对话',exact:true}));
     assert.equal((await findByRole(mount,'textbox',{name:'输入问题'})).value,'尚未发送的草稿');
     await showHistory();
     fireEvent.click(await findByRole(mount,'button',{name:/缓存知识笔记/}));
