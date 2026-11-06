@@ -93,3 +93,15 @@ test("pinned flag and detached geometry persist across store instances", () => {
   assert.equal(JSON.parse(data).detachedGeometry,null,"phantom rects must not be stored");
   assert.equal(JSON.parse(data).other,"keep");
 });
+
+test("launcher visibility defaults to on and persists without replacing other preferences", () => {
+  let data = '{"readerFont":19}';
+  const runtime = {reqnode:() => ({mkdirSync() {},readFileSync:() => data,writeFileSync:(file,text) => {data = text;}})};
+  const store = createAppearanceStore(runtime);
+  assert.equal(store.loadLauncherVisible(),true);
+  assert.equal(store.saveLauncherVisible(false),true);
+  assert.equal(createAppearanceStore(runtime).loadLauncherVisible(),false);
+  assert.equal(JSON.parse(data).readerFont,19);
+  store.saveLauncherVisible(true);
+  assert.equal(createAppearanceStore(runtime).loadLauncherVisible(),true);
+});

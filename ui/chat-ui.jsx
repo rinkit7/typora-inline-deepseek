@@ -119,11 +119,13 @@ function App({services}) {
   const [font,setFont] = useState(() => appearance.loadReaderFont());
   const [paused,setPaused] = useState(false), [opacity,setOpacity] = useState(() => appearance.loadOpacity());
   const [pinned,setPinned] = useState(() => appearance.loadPinned ? appearance.loadPinned() : false);
+  const [launcherVisible,setLauncherVisible] = useState(() => appearance.loadLauncherVisible?.() ?? true);
   const [quickAsks,setQuickAsks] = useState(() => normalizeQuickAsks(appearance.loadQuickAsks?.()));
   const [editingQuickAsks,setEditingQuickAsks] = useState(false);
   const [showingHistory,setShowingHistory] = useState(false);
   useEffect(() => {
     const refresh = () => {
+      setLauncherVisible(appearance.loadLauncherVisible?.() ?? true);
       const next = normalizeQuickAsks(appearance.loadQuickAsks?.());
       setQuickAsks(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
     };
@@ -202,6 +204,11 @@ function App({services}) {
             <button type="button" onClick={event => {setEditingQuickAsks(true); setShowingHistory(false); event.currentTarget.closest("details").removeAttribute("open");}}>快捷提问设置</button>
             <label className="ds-check"><input type="checkbox" checked={state.transparent} disabled={detached} onChange={event => session.setTransparent(event.target.checked)}/>透明共读</label>
             {detached && <p>透明共读在原文档内使用</p>}
+            <label className="ds-check"><input type="checkbox" checked={launcherVisible} onChange={event => {
+              const value = event.target.checked;
+              if (appearance.saveLauncherVisible?.(value) !== true) {session.report(Error("悬浮按钮设置保存失败，请重试。")); return;}
+              setLauncherVisible(value); actions.launcherVisible?.(value);
+            }}/>显示悬浮按钮</label>
             <label>回答底色 <output>{background}%</output><input aria-label="回答底色" type="range" min="20" max="100" step="5" value={background} onChange={event => {const value = +event.target.value; setBackground(value); appearance.saveReaderOpacity(value);}}/></label>
             <label>阅读字号 <output>{font}px</output><input aria-label="阅读字号" type="range" min="14" max="22" value={font} onChange={event => {const value = +event.target.value; setFont(value); appearance.saveReaderFont(value);}}/><span className="ds-font-preview" style={{fontSize:`${font}px`}}>文字预览 Aa 中文</span></label>
             {detached && <label>小窗不透明度 <output>{opacity}%</output><input aria-label="小窗不透明度" type="range" min="40" max="100" step="5" value={opacity} onChange={event => {const value = +event.target.value; setOpacity(value); appearance.saveOpacity(value);}}/></label>}

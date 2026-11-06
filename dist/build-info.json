@@ -1,6 +1,6 @@
 {
   "ui": "assistant-ui",
-  "sourceSha256": "bf9b32608cf1f362c125ce8e1fea182cf6d4652093892d967f99838c1971ad82",
+  "sourceSha256": "17226a97c3de14b8e163ab7f4e3d21e2330a30cb61c20b5437b9c5eb786e13fe",
   "packages": [
     {
       "name": "react",
@@ -703,5 +703,5 @@
       "version": "7.0.1"
     }
   ],
-  "sha256": "f1bce8d00cc776048e807eb32d8f5188c8154f2e22294f5a039fc853bb2a9a69"
+  "sha256": "38a7d03cbda858eeee0dac4eb80242a42c5dc54d407e47923f87cff8c57dbd96"
 }
