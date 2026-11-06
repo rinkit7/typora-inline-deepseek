@@ -4,9 +4,19 @@ import {createWebviewLifecycle,executeWebScript,fillWebComposer,submitWebCompose
 export function inspectDeepSeekReply() {
   const nodes = [...document.querySelectorAll(".ds-markdown")], last = nodes.at(-1);
   let budget = 200000;
+  const citations = / -\d+(?:-\d+)*(?=[\s。．！!？?；;]|$)/g;
+  function codeBlock(pre,language = "") {
+    const code = pre.querySelector("code"), clean = (code || pre).cloneNode(true);
+    clean.querySelectorAll('button,[role="button"],[aria-hidden="true"],script,style').forEach(node => node.remove());
+    const value = String(clean.textContent || "").slice(0,budget); budget -= value.length;
+    const hint = (code?.className || "").match(/(?:^|\s)language-([\w#+.-]+)/)?.[1] || pre.getAttribute("data-language") || language;
+    const label = /^[\w#+.-]{1,32}$/.test(hint) ? hint : "";
+    const fence = "`".repeat(Math.max(3,...[...value.matchAll(/`+/g)].map(match => match[0].length + 1)));
+    return `\n\n${fence}${label}\n${value}${value.endsWith("\n") ? "" : "\n"}${fence}\n\n`;
+  }
   function markdown(node,depth = 0) {
     if (!node || depth > 40 || budget <= 0) return "";
-    if (node.nodeType === 3) {const value = String(node.nodeValue || "").slice(0,budget); budget -= value.length; return value;}
+    if (node.nodeType === 3) {const value = String(node.nodeValue || "").slice(0,budget); budget -= value.length; return value.replace(citations,"");}
     if (node.nodeType !== 1) return "";
     const tag = node.tagName.toLowerCase();
     if (["script","style","iframe","object","embed","img","svg","button","input"].includes(tag)) return "";
@@ -15,13 +25,25 @@ export function inspectDeepSeekReply() {
       if (source) {const value = source.slice(0,budget); budget -= value.length; return node.parentElement?.classList?.contains("katex-display") ? `\n\n$$\n${value}\n$$\n\n` : `$${value}$`;}
     }
     if (node.getAttribute("aria-hidden") === "true") return "";
-    if (tag === "pre") {const value = String(node.innerText || "").slice(0,budget); budget -= value.length; const fence = "`".repeat(Math.max(3,...[...value.matchAll(/`+/g)].map(match => match[0].length + 1))); return `\n\n${fence}\n${value}\n${fence}\n\n`;}
+    if (tag === "pre") return codeBlock(node);
+    // Recognize code wrappers by structure and toolbar-only surrounding text.
+    // Do not strip words like "复制" from ordinary prose or from the code.
+    const blocks = node.querySelectorAll("pre");
+    if (blocks.length === 1) {
+      const surrounding = node.cloneNode(true); surrounding.querySelector("pre").remove();
+      const toolbar = surrounding.textContent.match(/^\s*([\w#+.-]{1,32})?\s*(?:(?:复制(?:代码)?|下载(?:代码)?|Copy(?: code)?|Download(?: code)?)\s*)+$/i);
+      if (toolbar) return codeBlock(blocks[0],toolbar[1] || "");
+    }
+    if (tag === "code") {
+      const content = String(node.textContent || "").slice(0,budget); budget -= content.length;
+      const fence = "`".repeat(Math.max(1,...[...content.matchAll(/`+/g)].map(match => match[0].length + 1)));
+      return `${fence} ${content} ${fence}`;
+    }
     const content = [...node.childNodes].map(child => markdown(child,depth + 1)).join("");
     if (tag === "br") return "\n";
     if (tag === "p" || tag === "blockquote" || /^h[1-6]$/.test(tag)) return `\n\n${tag === "blockquote" ? "> " : tag[0] === "h" ? "#".repeat(Number(tag[1])) + " " : ""}${content.trim()}\n\n`;
     if (tag === "strong" || tag === "b") return `**${content}**`;
     if (tag === "em" || tag === "i") return `*${content}*`;
-    if (tag === "code") {const fence = "`".repeat(Math.max(1,...[...content.matchAll(/`+/g)].map(match => match[0].length + 1))); return `${fence} ${content} ${fence}`;}
     if (tag === "li") return `\n${node.parentElement?.tagName === "OL" ? "1." : "-"} ${content.trim()}`;
     if (tag === "ul" || tag === "ol") return `\n${content}\n`;
     if (tag === "table") {
@@ -45,8 +67,7 @@ export function inspectDeepSeekReply() {
   // DeepSeek appends web-citation markers like " -2-4-10" before sentence
   // punctuation or line breaks; they are page furniture, not answer content.
   // The leading space is required so real ranges (2024-2025) survive.
-  const citations = / -\d+(?:-\d+)*(?=[\s。．！!？?；;]|$)/g;
-  return {count:nodes.length,text:last ? markdown(last).trim().slice(0,200000).replace(citations,"") : "",generating,loggedIn:!!textarea};
+  return {count:nodes.length,text:last ? markdown(last).trim().slice(0,200000) : "",generating,loggedIn:!!textarea};
 }
 
 export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900}) {

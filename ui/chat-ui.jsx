@@ -14,8 +14,22 @@ const Services = createContext(null);
 const convertMessage = message => ({id:message.id,role:message.role,content:[{type:"text",text:message.text || "正在等待 DeepSeek 回答…"}],metadata:{custom:{quote:message.quote || null,targetId:message.targetId,imported:!!message.imported,empty:!message.text}}});
 const run = (session,action) => Promise.resolve().then(action).catch(error => session.report(error));
 
+function CodeHeader({language,code}) {
+  const {actions,session} = useContext(Services);
+  const [copied,setCopied] = useState(null), [busy,setBusy] = useState(false);
+  const copy = async () => {
+    setBusy(true);
+    try {
+      if (await actions.copy(code) === false) throw Error("代码复制失败，请重试。");
+      setCopied(code);
+    } catch (error) {setCopied(null); session.report(error);}
+    finally {setBusy(false);}
+  };
+  return <div className="ds-code-header"><span>{language || "代码"}</span><button type="button" aria-label="复制代码" disabled={busy} onClick={copy}>{copied === code ? "已复制" : "复制代码"}</button></div>;
+}
+
 function Markdown() {
-  return <MarkdownTextPrimitive className="ds-markdown" smooth={false} defer skipHtml remarkPlugins={[remarkGfm,remarkMath]} rehypePlugins={[[rehypeKatex,{trust:false,throwOnError:false,strict:"ignore"}]]} components={{a:({children,href}) => <span className="ds-link" title={href}>{children}</span>}}/>;
+  return <MarkdownTextPrimitive className="ds-markdown" smooth={false} defer skipHtml remarkPlugins={[remarkGfm,remarkMath]} rehypePlugins={[[rehypeKatex,{trust:false,throwOnError:false,strict:"ignore"}]]} components={{CodeHeader,a:({children,href}) => <span className="ds-link" title={href}>{children}</span>}}/>;
 }
 
 function Message() {

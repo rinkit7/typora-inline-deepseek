@@ -75,3 +75,24 @@ test("web citation markers are stripped while real ranges survive", () => {
     assert.match(result.text,/成立于 2023 年。/);
   } finally {env.dispose();}
 });
+
+test("code toolbars become fenced language metadata without altering code or nearby prose", () => {
+  const env = browserEnvironment('<body><div class="ds-markdown"><p>点击复制下载；以下是示例。 -7</p><div><div><span>csharp</span><div role="button">复制</div><div role="button">下载</div></div><pre><code class="language-csharp"></code></pre></div><div><div>python Copy Download</div><pre><code></code></pre></div><pre><code class="language-text"></code></pre><p>普通正文中的 csharp复制下载 应保留。</p></div></body>');
+  try {
+    const codes = [...env.document.querySelectorAll("code")];
+    codes[0].textContent = '[Required(ErrorMessage = "请输入电影名称")]\n  public string? Title { get; set; }\n';
+    codes[1].textContent = 'print("复制下载")\nvalue = " -7"\n';
+    codes[2].textContent = '```\n<script>literal code</script>\n';
+    const {text} = inspectDeepSeekReply();
+    assert.ok(text.includes('```csharp\n'+codes[0].textContent+'```'));
+    assert.ok(text.includes('```python\n'+codes[1].textContent+'```'));
+    assert.ok(text.includes('````text\n'+codes[2].textContent+'````'));
+    assert.ok(!text.includes('csharp复制下载\n'));
+    assert.ok(!text.includes('Copy Download'));
+    assert.ok(text.includes('点击复制下载；以下是示例。'));
+    assert.ok(text.includes('普通正文中的 csharp复制下载 应保留。'));
+    assert.ok(!text.includes('示例。 -7'));
+    const isolated = new Function('document',`return (${inspectDeepSeekReply.toString()})()`)(env.document);
+    assert.equal(isolated.text,text,"the serialized extractor must work in the isolated webpage");
+  } finally {env.dispose();}
+});
