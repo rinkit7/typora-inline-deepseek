@@ -95,6 +95,22 @@ function QuickAskEditor({items,onSave,onCancel}) {
   </section>;
 }
 
+function HistoryPicker({actions,session,busy,onClose}) {
+  const [items,setItems] = useState([]), [query,setQuery] = useState(""), [error,setError] = useState(""), [loading,setLoading] = useState(true), [selecting,setSelecting] = useState(false), [revision,setRevision] = useState(0);
+  useEffect(() => {let alive = true; setLoading(true); setError(""); Promise.resolve().then(() => actions.listHistory()).then(value => {if (alive) setItems(value);}).catch(error => {if (alive) setError(error.message);}).finally(() => {if (alive) setLoading(false);}); return () => {alive = false;};},[actions,revision]);
+  const choose = async action => {setSelecting(true); try {await action(); onClose();} catch (error) {setError(error.message); session.report(error);} finally {setSelecting(false);}};
+  const disabled = busy || selecting;
+  const filtered = items.filter(item => item.title.toLowerCase().includes(query.toLowerCase()));
+  return <section className="ds-history" aria-label="历史问答">
+    <div className="ds-history-heading"><strong>网页历史问答</strong><button type="button" disabled={selecting} onClick={onClose}>返回对话</button></div>
+    <div className="ds-history-search"><input aria-label="搜索历史问答" value={query} placeholder="搜索会话标题…" onChange={event => setQuery(event.target.value)}/><button type="button" disabled={disabled} onClick={() => choose(actions.newConversation)}>新建问答</button></div>
+    <div className="ds-history-search"><button type="button" disabled={loading || disabled} onClick={() => setRevision(value => value + 1)}>刷新列表</button><button type="button" disabled={disabled} onClick={() => {actions.viewHistoryWeb(); onClose();}}>在网页查看完整历史</button></div>
+    <p className="ds-history-note">历史由 DeepSeek 保存，不另存本地历史库。列表读取网页已加载的会话；选择后显示最近回答，完整记录可在网页查看。{selecting ? "正在打开会话…" : ""}</p>
+    {error && <p role="alert" className="ds-template-error">{error}</p>}
+    <div className="ds-history-list">{loading ? <p>正在读取历史…</p> : !filtered.length ? <p>{query ? "没有匹配的历史问答" : "网页尚未加载历史列表，请在网页展开侧栏后刷新列表。"}</p> : filtered.map(item => <button type="button" key={item.id} disabled={disabled} onClick={() => choose(() => actions.openHistory(item.url))}><strong>{item.title}</strong><span>DeepSeek 网页会话</span></button>)}</div>
+  </section>;
+}
+
 function App({services}) {
   const {session,actions,appearance,detached,gestures} = services;
   const state = useSyncExternalStore(session.subscribe,session.getSnapshot,session.getSnapshot);
@@ -105,6 +121,7 @@ function App({services}) {
   const [pinned,setPinned] = useState(() => appearance.loadPinned ? appearance.loadPinned() : false);
   const [quickAsks,setQuickAsks] = useState(() => normalizeQuickAsks(appearance.loadQuickAsks?.()));
   const [editingQuickAsks,setEditingQuickAsks] = useState(false);
+  const [showingHistory,setShowingHistory] = useState(false);
   useEffect(() => {
     const refresh = () => {
       const next = normalizeQuickAsks(appearance.loadQuickAsks?.());
@@ -167,7 +184,7 @@ function App({services}) {
     const measure = () => actions.webBounds?.(webArea.current.getBoundingClientRect());
     measure(); const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
     observer?.observe(webArea.current); return () => observer?.disconnect();
-  },[state.view,state.error,editingQuickAsks,actions]);
+  },[state.view,state.error,editingQuickAsks,showingHistory,actions]);
   const transparent = state.transparent && !detached;
   return <Services.Provider value={services}><AssistantRuntimeProvider runtime={runtime}>
     <section aria-label="DeepSeek 选区问答" className={`ds-shell ${transparent ? "ds-transparent" : ""} ${state.view === "web" ? "ds-web" : ""} ${detached ? "ds-detached" : ""}`} style={{"--card-alpha":`${background}%`,"--reader-font":`${font}px`}}>
@@ -181,7 +198,8 @@ function App({services}) {
           <details className="ds-settings"><summary aria-label="更多设置">···</summary><div className="ds-settings-menu">
             <button type="button" onClick={() => run(session,actions.transfer)}>{detached ? "移回文档" : "独立窗口"}</button>
             <button type="button" onClick={() => run(session,actions.reload)}>刷新 DeepSeek 网页</button>
-            <button type="button" onClick={event => {setEditingQuickAsks(true); event.currentTarget.closest("details").removeAttribute("open");}}>快捷提问设置</button>
+            <button type="button" disabled={state.sending || state.responding} onClick={event => {setShowingHistory(true); setEditingQuickAsks(false); event.currentTarget.closest("details").removeAttribute("open");}}>历史问答</button>
+            <button type="button" onClick={event => {setEditingQuickAsks(true); setShowingHistory(false); event.currentTarget.closest("details").removeAttribute("open");}}>快捷提问设置</button>
             <label className="ds-check"><input type="checkbox" checked={state.transparent} disabled={detached} onChange={event => session.setTransparent(event.target.checked)}/>透明共读</label>
             {detached && <p>透明共读在原文档内使用</p>}
             <label>回答底色 <output>{background}%</output><input aria-label="回答底色" type="range" min="20" max="100" step="5" value={background} onChange={event => {const value = +event.target.value; setBackground(value); appearance.saveReaderOpacity(value);}}/></label>
@@ -192,7 +210,7 @@ function App({services}) {
         </div>
       </div>
       {state.error && <div role="alert" className="ds-error">{state.error}</div>}
-      {editingQuickAsks ? <QuickAskEditor items={quickAsks} onSave={saveQuickAsks} onCancel={() => setEditingQuickAsks(false)}/> : state.view === "chat" ? <ThreadPrimitive.Root className="ds-thread">
+      {showingHistory ? <HistoryPicker actions={actions} session={session} busy={state.sending || state.responding} onClose={() => setShowingHistory(false)}/> : editingQuickAsks ? <QuickAskEditor items={quickAsks} onSave={saveQuickAsks} onCancel={() => setEditingQuickAsks(false)}/> : state.view === "chat" ? <ThreadPrimitive.Root className="ds-thread">
         <ThreadPrimitive.Viewport className="ds-viewport" autoScroll>
           {!state.messages.length && <div className="ds-empty"><div>✦</div><h2>从一段文字开始</h2><p>在正文选中文字，右键选择<br/>“DeepSeek 问答”，引用会出现在输入框上方。</p><span>首次使用请在“网页”中登录 DeepSeek</span></div>}
           <ThreadPrimitive.Messages components={{UserMessage:Message,AssistantMessage:Message}}/>

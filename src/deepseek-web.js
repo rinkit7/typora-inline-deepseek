@@ -1,4 +1,5 @@
 import {createWebviewLifecycle,executeWebScript,fillWebComposer,submitWebComposer} from "./web-provider.js";
+import {inspectWebHistory,validateHistoryURL} from "./web-history.js";
 
 // Runs inside the isolated webpage. All output is inert Markdown text.
 export function inspectDeepSeekReply() {
@@ -70,16 +71,17 @@ export function inspectDeepSeekReply() {
   return {count:nodes.length,text:last ? markdown(last).trim().slice(0,200000) : "",generating,loggedIn:!!textarea};
 }
 
-export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900}) {
-  let disposed = false, active = false, polling = false, paused = false, suspended = false;
+export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900,historyPause = ms => new Promise(resolve => setTimeout(resolve,ms)),historyAttempts = 40}) {
+  let disposed = false, active = false, polling = false, paused = false, suspended = false, switching = false, historyFailed = false, epoch = 0;
   const listeners = new Set();
   const lifecycle = createWebviewLifecycle(webview,state => onStatus(state));
   const read = () => executeWebScript(webview,`(${inspectDeepSeekReply.toString()})()`,false,2200);
   async function poll() {
-    if (disposed || !active || polling || paused || suspended) return;
+    if (disposed || !active || polling || paused || suspended || switching || historyFailed) return;
     try {if (new URL(webview.getURL()).origin !== "https://chat.deepseek.com") return;} catch (_) {return;}
     polling = true;
-    try {const reply = await read(); if (!disposed && active && !suspended) for (const listener of listeners) listener(reply);}
+    const started = epoch;
+    try {const reply = await read(); if (!disposed && active && !suspended && !switching && epoch === started) for (const listener of listeners) listener(reply);}
     catch (_) {} finally {polling = false;}
   }
   const timer = setInterval(poll,interval);
@@ -89,6 +91,8 @@ export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900}) 
     setPaused(value) {paused = !!value; if (!paused) void poll();},
     setSuspended(value) {suspended = !!value; if (!suspended) void poll();},
     async send(prompt) {
+      if (switching) throw Error("正在打开历史问答，请稍候。");
+      if (historyFailed) throw Error("历史会话切换未完成，请重新选择会话后再发送。");
       await lifecycle.ensureReady();
       if (new URL(webview.getURL()).origin !== "https://chat.deepseek.com") throw Error("请先切换网页，回到 DeepSeek 聊天页面。");
       let baseline;
@@ -102,6 +106,35 @@ export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900}) 
       return {baseline};
     },
     poll,
+    async listHistory() {
+      await lifecycle.ensureReady();
+      if (new URL(webview.getURL()).origin !== "https://chat.deepseek.com") throw Error("请先回到 DeepSeek 网页并登录。");
+      const result = await executeWebScript(webview,`(${inspectWebHistory.toString()})()`,false,3000);
+      if (!result?.loggedIn) throw Error("请先切换“网页”并登录 DeepSeek，再刷新历史列表。");
+      return (result.items || []).map(item => ({...item,url:validateHistoryURL(item.url)}));
+    },
+    async openHistory(value) {
+      const url = validateHistoryURL(value,{allowNew:true});
+      if (switching) throw Error("正在切换会话，请稍候。");
+      const previous = this.getURL();
+      switching = true; epoch++;
+      try {
+        if (url !== this.getURL()) webview.setAttribute("src",url);
+        else if (url === "https://chat.deepseek.com/") webview.reload?.();
+        const deadline = Date.now() + 12000;
+        for (let attempt = 0; attempt < historyAttempts && !disposed && Date.now() < deadline; attempt++) {
+          await historyPause(150);
+          if (this.getURL().replace(/\/$/,"") !== url.replace(/\/$/,"")) continue;
+          try {
+            if (!await lifecycle.probe()) continue;
+            const reply = await read();
+            if (reply?.loggedIn && (url === "https://chat.deepseek.com/" || reply.text)) {historyFailed = false; return reply;}
+          } catch (_) {}
+        }
+        throw Error("历史会话尚未加载完成，请在“网页”中确认后重试。");
+      } catch (error) {historyFailed = true; if (previous !== url) webview.setAttribute("src",previous); throw error;}
+      finally {switching = false;}
+    },
     getURL() {try {const url = new URL(webview.getURL()); return url.origin === "https://chat.deepseek.com" ? url.href : "https://chat.deepseek.com/";} catch (_) {return "https://chat.deepseek.com/";}},
     navigate(url) {if (new URL(url).origin === "https://chat.deepseek.com" && url !== this.getURL()) webview.setAttribute("src",url);},
     reload() {webview.reload();},

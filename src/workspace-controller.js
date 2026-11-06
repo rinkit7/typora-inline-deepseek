@@ -90,7 +90,7 @@ export function createWorkspaceChat(plugin,options = {}) {
   const tracker = detached ? null : createSelectionTracker({host,getIdentity:() => plugin.getCurrentDocumentIdentity(),view,runtime});
   const targetId = () => runtime.reqnode("crypto").randomUUID();
   function diagnose(event) {
-    writeDiagnostic(runtime,"runtime-status.json",{plugin:"DeepSeek 选区问答",version:"2.1.2",dragEngine:"native-capture-v1",geometryRendering:"live",layout:"assistant-ui",detached,event,quoted:!!session.getSnapshot().quote,messageCount:session.getSnapshot().messages.length,time:new Date().toISOString()});
+    writeDiagnostic(runtime,"runtime-status.json",{plugin:"DeepSeek 选区问答",version:"2.2.0",dragEngine:"native-capture-v1",geometryRendering:"live",layout:"assistant-ui",detached,event,quoted:!!session.getSnapshot().quote,messageCount:session.getSnapshot().messages.length,time:new Date().toISOString()});
   }
   function remember(target) {
     if (!target?.text) return null;
@@ -142,6 +142,16 @@ export function createWorkspaceChat(plugin,options = {}) {
       if (detached) await options.onDock(payload); else {await options.onDetach(payload); session.hide();}
     } finally {transferring = false;}
   }
+  async function openHistory(url) {
+    if (session.getSnapshot().sending || session.getSnapshot().responding) throw Error("请等当前回答结束后再切换历史问答。");
+    const reply = await provider.openHistory(url);
+    const current = session.export();
+    const quotedTarget = targets.get(current.quote?.targetId);
+    targets.clear(); if (quotedTarget) targets.set(quotedTarget.targetId,quotedTarget); tracker?.clear();
+    const messages = reply.text && url !== "https://chat.deepseek.com/" ? [{id:targetId(),role:"assistant",text:reply.text,imported:true}] : [];
+    session.restore({...current,messages,contextTargetId:null,view:"chat"},{resume:!!messages.length});
+    session.notify(messages.length ? "已打开网页历史；当前显示最近回答，完整记录可在网页查看。" : "已打开新问答");
+  }
   async function insert(text,id) {
     if (!String(text).trim()) throw Error("回答为空。");
     if (detached) {await options.onInsert(text,id); session.notify("已插入原文档，可在原文档中撤销。"); return;}
@@ -184,6 +194,9 @@ export function createWorkspaceChat(plugin,options = {}) {
   };
   ui = mountChatUI(mount,shadow,{session,detached,appearance,
     actions:{transfer,close:() => detached ? options.onClose?.() : session.hide(),
+      listHistory:() => provider.listHistory(),openHistory,
+      newConversation:() => openHistory("https://chat.deepseek.com/"),
+      viewHistoryWeb:() => {session.setView("web"); session.notify("可在网页查看完整记录；展开侧栏后，可返回历史列表刷新并选择会话。");},
       copy:async text => {if (!await plugin.copyTextToClipboard(text)) throw Error("复制失败。"); session.notify("回答已复制。");},
       insert,reload:() => provider.reload(),pause:value => provider.setPaused(value),
       opacity:value => options.onOpacity?.(value),

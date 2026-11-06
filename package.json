@@ -1,6 +1,6 @@
 {
   "name": "typora-inline-deepseek",
-  "version": "2.1.2",
+  "version": "2.2.0",
   "type": "module",
   "description": "DeepSeek web chat inside Typora for Windows",
   "author": "typora-inline-deepseek contributors",

@@ -2,7 +2,7 @@ import {buildWebQuestion} from "./web-provider.js";
 
 export function createChatSession({provider,clock = () => Date.now()} = {}) {
   let state = {messages:[],draft:"",quote:null,contextTargetId:null,sending:false,responding:false,error:"",notice:"",view:"chat",transparent:false,visible:false};
-  let sequence = 0, pending = null, disposed = false;
+  let sequence = 0, pending = null, disposed = false, importLatest = true;
   const listeners = new Set();
   const publish = patch => {if (disposed) return; state = {...state,...patch}; for (const callback of listeners) callback();};
   const id = () => `m-${clock()}-${++sequence}`;
@@ -12,7 +12,7 @@ export function createChatSession({provider,clock = () => Date.now()} = {}) {
     if (!reply?.text) return;
     const signature = JSON.stringify([reply.count,reply.text]);
     if (!pending) {
-      if (!state.messages.length && !state.quote) publish({messages:[{id:id(),role:"assistant",text:reply.text,imported:true}]});
+      if (importLatest && !state.messages.length && !state.quote && !state.draft) publish({messages:[{id:id(),role:"assistant",text:reply.text,imported:true}]});
       return;
     }
     if (pending.baseline === signature) return;
@@ -61,10 +61,11 @@ export function createChatSession({provider,clock = () => Date.now()} = {}) {
     },
     receive,
     export() {return {...state,messages:state.messages.map(message => ({...message})),sending:false,responding:false};},
-    restore(data) {
+    restore(data,{resume = true} = {}) {
       pending = null;
+      importLatest = resume;
       const messages = Array.isArray(data?.messages) ? data.messages.filter(m => ["user","assistant"].includes(m.role) && typeof m.text === "string").map(m => ({...m,id:m.id || id()})) : [];
-      if (messages.at(-1)?.role === "assistant") pending = {id:messages.at(-1).id,baseline:null,lastText:messages.at(-1).text,changedAt:clock() - 3000,sentAt:clock()};
+      if (resume && messages.at(-1)?.role === "assistant") pending = {id:messages.at(-1).id,baseline:null,lastText:messages.at(-1).text,changedAt:clock() - 3000,sentAt:clock()};
       publish({messages,draft:String(data?.draft || ""),quote:data?.quote?.text ? data.quote : null,contextTargetId:data?.contextTargetId || null,transparent:!!data?.transparent,view:data?.view === "web" ? "web" : "chat",visible:true,sending:false,responding:false,error:"",notice:"已恢复会话"});
     },
     clear() {pending = null; publish({messages:[],draft:"",quote:null,error:"",responding:false});},
