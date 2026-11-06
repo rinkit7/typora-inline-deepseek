@@ -107,7 +107,7 @@ function HistoryPicker({actions,session,busy,onClose}) {
     <div className="ds-history-search"><button type="button" disabled={loading || disabled} onClick={() => setRevision(value => value + 1)}>刷新列表</button><button type="button" disabled={disabled} onClick={() => {actions.viewHistoryWeb(); onClose();}}>在网页查看完整历史</button></div>
     <p className="ds-history-note">历史由 DeepSeek 保存，不另存本地历史库。列表读取网页已加载的会话；选择后显示最近回答，完整记录可在网页查看。{selecting ? "正在打开会话…" : ""}</p>
     {error && <p role="alert" className="ds-template-error">{error}</p>}
-    <div className="ds-history-list">{loading ? <p>正在读取历史…</p> : !filtered.length ? <p>{query ? "没有匹配的历史问答" : "网页尚未加载历史列表，请在网页展开侧栏后刷新列表。"}</p> : filtered.map(item => <button type="button" key={item.id} disabled={disabled} onClick={() => choose(() => actions.openHistory(item.url))}><strong>{item.title}</strong><span>DeepSeek 网页会话</span></button>)}</div>
+    <div className="ds-history-list">{loading ? <p>正在读取历史…</p> : !filtered.length ? <p>{query ? "没有匹配的历史问答" : "网页尚未加载历史列表，请在网页展开侧栏后刷新列表。"}</p> : filtered.map(item => <button type="button" key={item.id} disabled={disabled} onClick={() => choose(() => actions.openHistory(item.url))}><strong>{item.title}</strong><span>{item.dateLabel || "日期未知"} · DeepSeek 网页会话</span></button>)}</div>
   </section>;
 }
 

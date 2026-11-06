@@ -42,6 +42,23 @@ test("switching web history rejects old in-flight reads and restores the chosen 
   } finally {provider.dispose();}
 });
 
+test("history dates use item metadata or webpage date groups without guessing missing dates", () => {
+  const env = browserEnvironment('<body><aside><section><h3>今天</h3><a href="/a/chat/s/today">today</a><a href="/a/chat/s/explicit" data-updated-at="2025-12-23T10:00:00Z">explicit</a></section><section><h3>昨天</h3><a href="/a/chat/s/yesterday">yesterday</a></section><section><h3>过去7天</h3><a href="/a/chat/s/range">range</a></section><section><a href="/a/chat/s/clock"><time datetime="2024-02-29">time</time></a></section><section><a href="/a/chat/s/props">props</a></section><section><a href="/a/chat/s/missing">2020-01-01 in title is not metadata</a></section><section><a href="/a/chat/s/invalid" data-created-at="2026-02-30">invalid</a></section></aside></body>');
+  try {
+    const now = new Date(2026,0,1,12).getTime();
+    const props = env.document.querySelector('a[href$="/props"]');
+    props.__reactProps$test = {session:{id:'props',updated_at:Date.parse('2025-11-20T10:00:00Z') / 1000,token:'must-not-be-returned'}};
+    const items = inspectWebHistory(now).items;
+    assert.deepEqual(items.map(item => item.dateLabel),['2026-01-01','2025-12-23','2025-12-31','过去7天（网页分组）','2024-02-29','2025-11-20','日期未知','日期未知']);
+    assert.ok(!JSON.stringify(items).includes('must-not-be-returned'));
+    props.__reactProps$test.session.id = 'different-conversation';
+    assert.equal(inspectWebHistory(now).items.find(item => item.id.endsWith('/props')).dateLabel,'日期未知');
+    props.__reactFiber$test = {memoizedProps:{},return:{memoizedProps:{item:{id:'props',created_at:'2023-01-03'}}}};
+    assert.equal(inspectWebHistory(now).items.find(item => item.id.endsWith('/props')).dateLabel,'2023-01-03');
+    assert.deepEqual(new Function('document','now',`return (${inspectWebHistory.toString()})(now)`)(env.document,now).items,inspectWebHistory(now).items);
+  } finally {env.dispose();}
+});
+
 test("a failed history navigation retains the original page and blocks ambiguous sends", async () => {
   const original = 'https://chat.deepseek.com/a/chat/s/old', navigations = [];
   const page = {addEventListener() {},removeEventListener() {},getURL:() => original,setAttribute:(key,value) => navigations.push(value),executeJavaScript:async () => true};
@@ -67,7 +84,7 @@ test("history picker uses webpage records, preserves the draft and quote, and wr
         node.getURL = () => url;
         node.executeJavaScript = async script => {
           if (script.includes('inspectWebPageReady')) return true;
-          if (script.includes('inspectWebHistory')) return {loggedIn:true,items:[{id:'saved',title:'缓存知识笔记',url:'https://chat.deepseek.com/a/chat/s/saved'}]};
+          if (script.includes('inspectWebHistory')) return {loggedIn:true,items:[{id:'saved',title:'缓存知识笔记',dateLabel:'2026-11-06',url:'https://chat.deepseek.com/a/chat/s/saved'}]};
           if (script.includes('inspectDeepSeekReply')) return {loggedIn:true,count:1,text:currentText,generating:false};
           throw Error('history must not send');
         };
@@ -92,6 +109,7 @@ test("history picker uses webpage records, preserves the draft and quote, and wr
       await waitFor(() => assert.equal(button.getAttribute('aria-pressed'),'true'));
     };
     await showHistory(); await findByRole(mount,'region',{name:'历史问答'});
+    await findByText(mount,'2026-11-06 · DeepSeek 网页会话');
     fireEvent.click(await findByRole(mount,'button',{name:'返回对话'}));
     assert.equal((await findByRole(mount,'textbox',{name:'输入问题'})).value,'尚未发送的草稿');
     await showHistory();

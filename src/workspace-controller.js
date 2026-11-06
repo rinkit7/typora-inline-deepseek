@@ -90,7 +90,7 @@ export function createWorkspaceChat(plugin,options = {}) {
   const tracker = detached ? null : createSelectionTracker({host,getIdentity:() => plugin.getCurrentDocumentIdentity(),view,runtime});
   const targetId = () => runtime.reqnode("crypto").randomUUID();
   function diagnose(event) {
-    writeDiagnostic(runtime,"runtime-status.json",{plugin:"DeepSeek 选区问答",version:"2.2.2",dragEngine:"native-capture-v1",geometryRendering:"live",layout:"assistant-ui",detached,event,quoted:!!session.getSnapshot().quote,messageCount:session.getSnapshot().messages.length,time:new Date().toISOString()});
+    writeDiagnostic(runtime,"runtime-status.json",{plugin:"DeepSeek 选区问答",version:"2.2.3",dragEngine:"native-capture-v1",geometryRendering:"live",layout:"assistant-ui",detached,event,quoted:!!session.getSnapshot().quote,messageCount:session.getSnapshot().messages.length,time:new Date().toISOString()});
   }
   function remember(target) {
     if (!target?.text) return null;
