@@ -2,7 +2,7 @@
   "name": "typora-inline-deepseek",
   "version": "2.2.0",
   "type": "module",
-  "description": "DeepSeek web chat inside Typora for Windows",
+  "description": "适用于 Windows 版 Typora 的 DeepSeek 选区问答插件，支持自定义提问、透明共读、独立窗口和网页历史会话。",
   "author": "typora-inline-deepseek contributors",
   "license": "MIT",
   "main": "main.js",
