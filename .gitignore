@@ -1,5 +1,7 @@
 node_modules/
 .cache/
+/installation.json
+/runtime-status.json
 *.log
 data/
 backups/

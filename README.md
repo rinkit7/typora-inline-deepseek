@@ -137,6 +137,8 @@
 
 窗口桥接与偏好保存在已安装插件的 `data/`。**桥接文件可能包含引用、草稿和对话内容，分享源码时不要包含 `data/`。** 诊断仅记录版本、事件、是否有引用和消息数量等信息，不记录正文、问题或账号。
 
+本机安装记录 `installation.json`、根目录的 `runtime-status.json`、旧 ZIP 归档与 `.bundle` 历史包也不属于发布内容，均应排除；不要直接公开包含这些文件的上层工作目录。
+
 <details>
 <summary>Windows 上拖动或滚动明显卡顿</summary>
 
@@ -190,6 +192,8 @@ npm test
 感谢 [KokuYu-sysu/AI4Typora](https://github.com/KokuYu-sysu/AI4Typora)。本项目最初基于该项目的本地定制版本开发，后续逐步演进为当前的 DeepSeek 选区问答插件。原作者及历史来源的 MIT 许可保留在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 中。
 
 同时感谢 [typora-community-plugin](https://github.com/typora-community-plugin/typora-community-plugin)、[assistant-ui](https://github.com/assistant-ui/assistant-ui)、React、KaTeX 及其他依赖的贡献者。
+
+感谢 Linux.do 社区提供的交流与分享平台。友情链接：[Linux.do](https://linux.do/)。
 
 ## 许可与来源
 
