@@ -39,7 +39,7 @@ function Message() {
   const content = message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
   const user = message.role === "user";
   return <MessagePrimitive.Root className={`ds-message ${user ? "ds-user" : "ds-assistant"}`}>
-    <div className="ds-message-label">{user ? "你" : message.metadata?.custom?.imported ? "DeepSeek · 网页最近回答" : "DeepSeek"}</div>
+    <div className="ds-message-label">{user ? "你" : message.metadata?.custom?.imported ? "DeepSeek · 网页历史" : "DeepSeek"}</div>
     {quote && <details className="ds-sent-quote"><summary>引用 · {quote.label}</summary><blockquote>{quote.text}</blockquote></details>}
     <MessagePrimitive.Parts components={{Text:Markdown}}/>
     {!user && <div className="ds-message-actions"><button type="button" disabled={message.metadata?.custom?.empty} onClick={() => run(session,() => actions.copy(content))}>复制</button><button type="button" disabled={message.metadata?.custom?.empty || !message.metadata?.custom?.targetId} title={!message.metadata?.custom?.targetId ? "此回答没有可用的原文插入位置，可复制后手动插入" : "插入本次问题对应的原文位置"} onClick={() => run(session,() => actions.insert(content,message.metadata?.custom?.targetId))}>插入文档</button></div>}
@@ -105,7 +105,7 @@ function HistoryPicker({actions,session,busy,onClose}) {
     <div className="ds-history-heading"><strong>网页历史问答</strong><button type="button" disabled={selecting} onClick={onClose}>返回对话</button></div>
     <div className="ds-history-search"><input aria-label="搜索历史问答" value={query} placeholder="搜索会话标题…" onChange={event => setQuery(event.target.value)}/><button type="button" disabled={disabled} onClick={() => choose(actions.newConversation)}>新建问答</button></div>
     <div className="ds-history-search"><button type="button" disabled={loading || disabled} onClick={() => setRevision(value => value + 1)}>刷新列表</button><button type="button" disabled={disabled} onClick={() => {actions.viewHistoryWeb(); onClose();}}>在网页查看完整历史</button></div>
-    <p className="ds-history-note">历史由 DeepSeek 保存，不另存本地历史库。列表读取网页已加载的会话；选择后显示最近回答，完整记录可在网页查看。{selecting ? "正在打开会话…" : ""}</p>
+    <p className="ds-history-note">历史由 DeepSeek 保存，不另存本地历史库。选择会话后会滚动读取多轮问答，较长会话需要稍等；完整记录也可在网页查看。{selecting ? "正在打开会话…" : ""}</p>
     {error && <p role="alert" className="ds-template-error">{error}</p>}
     <div className="ds-history-list">{loading ? <p>正在读取历史…</p> : !filtered.length ? <p>{query ? "没有匹配的历史问答" : "网页尚未加载历史列表，请在网页展开侧栏后刷新列表。"}</p> : filtered.map(item => <button type="button" key={item.id} disabled={disabled} onClick={() => choose(() => actions.openHistory(item.url))}><strong>{item.title}</strong><span>{item.dateLabel || "日期未知"} · DeepSeek 网页会话</span></button>)}</div>
   </section>;

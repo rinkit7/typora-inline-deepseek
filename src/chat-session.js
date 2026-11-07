@@ -4,8 +4,13 @@ export function createChatSession({provider,clock = () => Date.now()} = {}) {
   let state = {messages:[],draft:"",quote:null,contextTargetId:null,sending:false,responding:false,error:"",notice:"",view:"chat",transparent:false,visible:false};
   let sequence = 0, pending = null, disposed = false, importLatest = true;
   const listeners = new Set();
+  const messageIds = new Set();
   const publish = patch => {if (disposed) return; state = {...state,...patch}; for (const callback of listeners) callback();};
-  const id = () => `m-${clock()}-${++sequence}`;
+  const id = () => {
+    let value;
+    do {value = `m-${clock()}-${++sequence}`;} while (messageIds.has(value));
+    messageIds.add(value); return value;
+  };
   function receive(reply) {
     if (disposed || state.sending) return;
     if (pending && state.responding && clock() - pending.sentAt > 90000 && (!reply?.text || pending.baseline === JSON.stringify([reply.count,reply.text]))) publish({responding:false,notice:"网页暂未返回回答，可切换“网页”查看。"});
@@ -64,11 +69,18 @@ export function createChatSession({provider,clock = () => Date.now()} = {}) {
     restore(data,{resume = true} = {}) {
       pending = null;
       importLatest = resume;
-      const messages = Array.isArray(data?.messages) ? data.messages.filter(m => ["user","assistant"].includes(m.role) && typeof m.text === "string").map(m => ({...m,id:m.id || id()})) : [];
-      if (resume && messages.at(-1)?.role === "assistant") pending = {id:messages.at(-1).id,baseline:null,lastText:messages.at(-1).text,changedAt:clock() - 3000,sentAt:clock()};
+      const restored = Array.isArray(data?.messages) ? data.messages.filter(m => ["user","assistant"].includes(m.role) && typeof m.text === "string") : [];
+      messageIds.clear();
+      for (const message of restored) if (typeof message.id === "string" && message.id) messageIds.add(message.id);
+      const assigned = new Set();
+      const messages = restored.map(message => {
+        const key = typeof message.id === "string" && message.id && !assigned.has(message.id) ? message.id : id();
+        assigned.add(key); return {...message,id:key};
+      });
+      if (resume && messages.at(-1)?.role === "assistant" && !messages.at(-1).imported) pending = {id:messages.at(-1).id,baseline:null,lastText:messages.at(-1).text,changedAt:clock() - 3000,sentAt:clock()};
       publish({messages,draft:String(data?.draft || ""),quote:data?.quote?.text ? data.quote : null,contextTargetId:data?.contextTargetId || null,transparent:!!data?.transparent,view:data?.view === "web" ? "web" : "chat",visible:true,sending:false,responding:false,error:"",notice:"已恢复会话"});
     },
-    clear() {pending = null; publish({messages:[],draft:"",quote:null,error:"",responding:false});},
+    clear() {pending = null; messageIds.clear(); publish({messages:[],draft:"",quote:null,error:"",responding:false});},
     dispose() {disposed = true; unsubscribe?.(); listeners.clear();}
   };
 }

@@ -3,7 +3,7 @@
   "name": "typora-inline-deepseek",
   "description": "DeepSeek 选区问答：assistant-ui 会话、正文引用、透明共读与独立窗口",
   "author": "typora-inline-deepseek contributors",
-  "version": "2.2.3",
+  "version": "2.2.4",
   "minAppVersion": "1.5.0",
   "minCoreVersion": "2.7.1",
   "platforms": [

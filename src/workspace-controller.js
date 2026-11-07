@@ -148,9 +148,17 @@ export function createWorkspaceChat(plugin,options = {}) {
     const current = session.export();
     const quotedTarget = targets.get(current.quote?.targetId);
     targets.clear(); if (quotedTarget) targets.set(quotedTarget.targetId,quotedTarget); tracker?.clear();
-    const messages = reply.text && url !== "https://chat.deepseek.com/" ? [{id:targetId(),role:"assistant",text:reply.text,imported:true}] : [];
-    session.restore({...current,messages,contextTargetId:null,view:"chat"},{resume:!!messages.length});
-    session.notify(messages.length ? "已打开网页历史；当前显示最近回答，完整记录可在网页查看。" : "已打开新问答");
+    // A loaded history session carries its whole visible conversation, not
+    // just the newest answer: restore every user question and assistant
+    // answer in page order so earlier exchanges stay readable.
+    const restored = (reply.messages || []).filter(entry => ["user","assistant"].includes(entry.role) && entry.text)
+      .map(entry => ({id:targetId(),role:entry.role,text:entry.text,imported:true}));
+    const messages = url === "https://chat.deepseek.com/" ? [] :
+      restored.length ? restored : reply.text ? [{id:targetId(),role:"assistant",text:reply.text,imported:true}] : [];
+    // Imported turns are a snapshot. Only a new submit creates a live answer
+    // target; background reads must never overwrite a historical answer.
+    session.restore({...current,messages,contextTargetId:null,view:"chat"},{resume:false});
+    session.notify(messages.length ? `已打开网页历史，共 ${messages.length} 条消息；继续提问将接在此会话后。${reply.truncated ? "部分单条消息过长，已截断；完整内容请在网页查看。" : ""}` : "已打开新问答");
   }
   async function insert(text,id) {
     if (!String(text).trim()) throw Error("回答为空。");

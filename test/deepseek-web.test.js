@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {browserEnvironment} from "./helpers/browser-env.js";
-import {inspectDeepSeekReply,createDeepSeekWeb} from "../src/deepseek-web.js";
+import {inspectDeepSeekReply,inspectDeepSeekReplyBuilder,createDeepSeekWeb} from "../src/deepseek-web.js";
 
 test("geometry gestures suspend answer extraction without clearing the user's pause or publishing an in-flight read", async () => {
   let finishRead, reads = 0;
@@ -92,7 +92,67 @@ test("code toolbars become fenced language metadata without altering code or nea
     assert.ok(text.includes('点击复制下载；以下是示例。'));
     assert.ok(text.includes('普通正文中的 csharp复制下载 应保留。'));
     assert.ok(!text.includes('示例。 -7'));
-    const isolated = new Function('document',`return (${inspectDeepSeekReply.toString()})()`)(env.document);
+    const isolated = new Function('document',`return (${inspectDeepSeekReplyBuilder.toString()})().reply()`)(env.document);
     assert.equal(isolated.text,text,"the serialized extractor must work in the isolated webpage");
+  } finally {env.dispose();}
+});
+
+test("conversation extraction restores every user question and assistant answer in page order", () => {
+  const env = browserEnvironment('<body><div id="chat">'
+    + '<div class="group"><div class="bubble">第一段提问内容</div><div class="answer"><div class="ds-markdown"><p>第一段回答内容。</p></div></div></div>'
+    + '<div class="group"><div class="bubble">复制<br/>真正的提问<br/>已深度思考（用时6秒）</div><div class="answer"><span class="ds-markdown"><p>第二段回答 -2-4-10</p></span></div></div>'
+    + '<div class="group"><div class="ds-markdown"><p>第三段回答，没有提问。</p></div></div>'
+    + '</div><div><textarea></textarea></div></body>');
+  try {
+    const result = inspectDeepSeekReplyBuilder().conversation();
+    assert.deepEqual(result.messages.map(message => [message.role,message.text]),[
+      ["user","第一段提问内容"],
+      ["assistant","第一段回答内容。"],
+      ["user","真正的提问"],
+      ["assistant","第二段回答"],
+      ["assistant","第三段回答，没有提问。"],
+    ],"page furniture lines and citation markers must be dropped, questions kept in order");
+    assert.equal(result.loggedIn,true);
+    assert.equal(result.generating,false);
+    // The newest answer read by the poll must be byte-identical to the last
+    // restored assistant message, so restore does not trigger an update.
+    assert.equal(result.text,inspectDeepSeekReply().text);
+    assert.equal(result.text,inspectDeepSeekReplyBuilder().conversation().text,"in-page and in-process reads agree");
+    assert.deepEqual(new Function(`return (${inspectDeepSeekReplyBuilder.toString()})().conversation()`)(),result);
+  } finally {env.dispose();}
+});
+
+test("conversation extraction handles an empty page and keeps returning the reply reader", () => {
+  const env = browserEnvironment('<body><textarea></textarea></body>');
+  try {
+    const reader = inspectDeepSeekReplyBuilder();
+    const empty = reader.conversation();
+    assert.deepEqual(empty.messages,[]);
+    assert.equal(empty.text,"");
+    assert.equal(empty.loggedIn,true);
+    assert.equal(reader.reply().loggedIn,true);
+  } finally {env.dispose();}
+});
+
+test("a single history question is included without main landmarks or stable message classes", () => {
+  const env = browserEnvironment('<body><aside>Unrelated sidebar</aside><div><div>第一段<p>第二段</p><p>第三段</p></div><section><div><button>复制</button><div class="ds-markdown"><p>回答</p></div></div></section></div><textarea></textarea></body>');
+  try {
+    assert.deepEqual(inspectDeepSeekReplyBuilder().conversation().messages,[{role:"user",text:"第一段\n第二段\n第三段"},{role:"assistant",text:"回答"}]);
+  } finally {env.dispose();}
+});
+
+test("per-message history limits preserve long questions and keep the latest answer identical to live reading", () => {
+  const env = browserEnvironment('<body><main><div id="question"></div><div class="ds-markdown" id="first"></div><div>follow up</div><div class="ds-markdown" id="last"></div></main><textarea></textarea></body>');
+  try {
+    env.document.getElementById("question").textContent = "Q".repeat(12000);
+    env.document.getElementById("first").textContent = "A".repeat(200001);
+    env.document.getElementById("last").textContent = "last answer";
+    const reader = inspectDeepSeekReplyBuilder(), history = reader.conversation();
+    assert.equal(history.messages.length,4);
+    assert.equal(history.messages[0].text.length,12000,"long user questions must not disappear");
+    assert.equal(history.messages[1].text.length,200000);
+    assert.equal(history.truncated,true);
+    assert.equal(history.messages.at(-1).text,reader.reply().text);
+    assert.equal(history.text,"last answer");
   } finally {env.dispose();}
 });

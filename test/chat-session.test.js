@@ -58,3 +58,23 @@ test("one conversation state survives view changes and serialized window transfe
   child.askSelection({text:"other",targetId:"another"}); assert.equal(child.getSnapshot().messages.length,2);
   origin.dispose(); child.dispose();
 });
+
+test("imported history stays immutable across window transfer while a new question still streams its own answer", async () => {
+  let now = 0;
+  const history = [{role:"user",text:"first question",imported:true},{role:"assistant",text:"first answer",imported:true},
+    {role:"user",text:"second question",imported:true},{role:"assistant",text:"second answer",imported:true}];
+  const provider = {send:async prompt => {assert.equal(prompt,"third question"); return {baseline:{count:2,text:"second answer"}};}};
+  const origin = createChatSession({provider,clock:() => now});
+  const child = createChatSession({provider,clock:() => now});
+  try {
+    origin.restore({messages:history},{resume:false});
+    child.restore(JSON.parse(JSON.stringify(origin.export())));
+    child.receive({count:3,text:"unrelated webpage answer",generating:false});
+    assert.deepEqual(child.getSnapshot().messages.map(m => m.text),history.map(m => m.text));
+    assert.equal(await child.submit("third question"),true);
+    child.receive({count:3,text:"third answer",generating:true});
+    now = 3000; child.receive({count:3,text:"third answer",generating:false});
+    assert.deepEqual(child.getSnapshot().messages.map(m => m.text),[...history.map(m => m.text),"third question","third answer"]);
+    assert.equal(child.getSnapshot().responding,false);
+  } finally {origin.dispose(); child.dispose();}
+});
