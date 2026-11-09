@@ -69,8 +69,21 @@ export function inspectWebHistory(now = Date.now()) {
   return {items,loggedIn:!!document.querySelector("textarea")};
 }
 
+export const DEEPSEEK_HOME = "https://chat.deepseek.com/";
+
+// Also serialized into the guest to check its live Location before a send.
+export function conversationAt({origin,pathname}) {
+  if (origin !== "https://chat.deepseek.com") return null;
+  if (pathname === "/") return `${origin}/`;
+  return /^\/a\/chat\/s\/[a-zA-Z0-9-]+\/?$/.test(pathname) ? origin + pathname.replace(/\/$/,"") : null;
+}
+
+export function getConversationURL(value) {
+  try {return conversationAt(new URL(value));} catch (_) {return null;}
+}
+
 export function validateHistoryURL(value,{allowNew = false} = {}) {
-  const url = new URL(value,"https://chat.deepseek.com/");
-  if (url.origin !== "https://chat.deepseek.com" || !(allowNew && url.pathname === "/") && !/^\/a\/chat\/s\/[a-zA-Z0-9-]+\/?$/.test(url.pathname)) throw Error("历史会话地址无效。");
-  return url.origin + url.pathname;
+  const url = conversationAt(new URL(value,DEEPSEEK_HOME));
+  if (!url || (!allowNew && url === DEEPSEEK_HOME)) throw Error("历史会话地址无效。");
+  return url;
 }

@@ -271,3 +271,35 @@ test("an active detached window receives a new selection rather than only a focu
     assert.ok(delivered.selectionContext.targetId);
   } finally {controller?.dispose(); env.dispose();}
 });
+
+test("insertion rejects a selection whose live range moved after the same Markdown was restored", async () => {
+  const env = browserEnvironment('<body><div id="write" contenteditable="true"><p>Before</p><p>Selected paragraph</p><p>After</p></div></body>');
+  let controller;
+  try {
+    const {document,window} = env, write = document.getElementById("write");
+    const paragraph = write.children[1];
+    const getMarkdown = () => [...write.children].map(child => child.textContent).join("\n\n");
+    const original = getMarkdown();
+    window.File = {editor:{getMarkdown}};
+    window.reqnode = name => name === "crypto" ? {randomUUID:() => "target"} : {readFileSync() {throw Error("missing");},mkdirSync() {},writeFileSync() {}};
+    const {createWorkspaceChat} = await import("../src/workspace-controller.js");
+    controller = createWorkspaceChat({editorSelection:new TyporaHost(window,document),getCurrentDocumentIdentity:() => ({key:"doc"}),app:{workspace:{on:() => () => {}}}});
+    const range = document.createRange(); range.selectNodeContents(paragraph);
+    window.getSelection().addRange(range);
+    paragraph.dispatchEvent(new window.KeyboardEvent("keydown",{key:"i",ctrlKey:true,bubbles:true}));
+    const inserts = [];
+    document.execCommand = () => {
+      const caret = window.getSelection().getRangeAt(0);
+      inserts.push([caret.startContainer,caret.startOffset]);
+      return true;
+    };
+    await controller.insertFromRemote("answer","target");
+    assert.deepEqual(inserts,[[paragraph,1]]);
+
+    const edit = document.createElement("p"); edit.textContent = "Temporary edit";
+    paragraph.replaceWith(edit); edit.replaceWith(paragraph.cloneNode(true));
+    assert.equal(getMarkdown(),original);
+    await assert.rejects(controller.insertFromRemote("answer","target"),/选区已失效/);
+    assert.equal(inserts.length,1);
+  } finally {controller?.dispose(); env.dispose();}
+});

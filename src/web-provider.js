@@ -87,7 +87,7 @@ export function createWebviewLifecycle(webview, onState = () => {}, options = {}
 }
 
 // This code runs inside DeepSeek's isolated web page, with no Node access.
-export function fillWebComposer(text) {
+export function fillWebComposer(text,focus = true) {
   const el = document.querySelector('textarea:not([disabled])');
   if (!el) return { ok: false, reason: document.querySelector('textarea[disabled]')
     ? "上一条回答尚未结束，请等待生成完成后再提问。"
@@ -96,7 +96,7 @@ export function fillWebComposer(text) {
   setter.call(el, text);
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  el.focus();
+  if (focus) el.focus();
   return { ok: true };
 }
 
@@ -107,7 +107,9 @@ export function readWebAnswer() {
   return last ? String(last.innerText || "").trim() : "";
 }
 
-export async function submitWebComposer() {
+export async function submitWebComposer({expectedURL,getURL = () => expectedURL,text,deadline = Infinity} = {}) {
+  const pageChanged = {ok:false,reason:"DeepSeek 网页会话已切换，请从「历史」重新选择。"};
+  if (getURL() !== expectedURL) return pageChanged;
   const input = document.querySelector('textarea:not([disabled])');
   if (!input?.value.trim()) return { ok: false, reason: "网页输入框为空。" };
   const isEnabled = button => {
@@ -140,6 +142,8 @@ export async function submitWebComposer() {
   }
   let button;
   for (let attempt = 0; attempt < 12; attempt++) {
+    if (getURL() !== expectedURL) return pageChanged;
+    if (Date.now() >= deadline) return {ok:false,reason:"等待发送超时，请确认网页状态后重试。"};
     button = findButton();
     if (button) break;
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -156,11 +160,36 @@ export async function submitWebComposer() {
     }
     return { ok:false, reason:"未识别到可用的网页发送按钮，请点击网页自身的发送按钮。", candidates };
   }
+  if (getURL() !== expectedURL) return pageChanged;
+  if (Date.now() >= deadline || !input.isConnected || (text !== undefined && input.value !== text)) {
+    return {ok:false,reason:"网页输入框已变化或等待超时，请确认网页状态后重试。"};
+  }
   button.click();
   // Never retry a click: a delayed successful submission must not be duplicated.
-  for (let attempt = 0; attempt < 20; attempt++) {
+  // The first send can assign a conversation URL in this same document.
+  const creating = expectedURL === "https://chat.deepseek.com/";
+  let confirmed = false, sentURL = expectedURL;
+  for (let attempt = 0; attempt < (creating ? 30 : 20); attempt++) {
     await new Promise(resolve => setTimeout(resolve, 100));
-    if (!input.isConnected || !input.value.trim()) return { ok:true };
+    const url = getURL();
+    if (url !== sentURL) {
+      if (!creating || sentURL !== expectedURL || !url) return {ok:false,reason:"已点击发送，但网页会话已切换。请先查看网页状态。"};
+      sentURL = url;
+    }
+    confirmed ||= !input.isConnected || !input.value.trim();
+    if (confirmed && (!creating || url !== expectedURL)) return {ok:true,url};
   }
+  if (confirmed) return {ok:true,url:sentURL};
   return { ok:false, reason:"已点击网页发送按钮，但尚未确认发送。请查看网页状态；不会重复发送。" };
+}
+
+// Serialized with its helpers so both DOM mutations run in the same guest
+// document. A host-side getURL() check alone cannot guard a queued script.
+export function sendWebQuestion(expectedURL,prompt,deadline,conversationAt,fill,submit) {
+  const getURL = () => conversationAt(document.location);
+  if (getURL() !== expectedURL) return {ok:false,reason:"DeepSeek 网页会话已切换，请从「历史」重新选择。"};
+  if (Date.now() >= deadline) return {ok:false,reason:"等待发送超时，请确认网页状态后重试。"};
+  const text = prompt.replace(/\r\n?/g,"\n");
+  const result = fill(text,false);
+  return result.ok ? submit({expectedURL,getURL,text,deadline}) : result;
 }

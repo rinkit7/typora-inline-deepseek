@@ -1,7 +1,7 @@
 // Capture document context before a menu/button can move focus to chat.
 export function createSelectionTracker({host,getIdentity,view = document,runtime = window}) {
   let cached = null, consumed = null, disposed = false, suspended = false;
-  const sameSelection = (a,b) => a && b && a.key === b.key && a.text === b.text && (a.cm ? a.cm.wrapper === b.cm?.wrapper && JSON.stringify(a.to) === JSON.stringify(b.to) : a.range?.endContainer === b.range?.endContainer && a.range?.endOffset === b.range?.endOffset);
+  const sameSelection = (a,b) => a && b && a.key === b.key && a.text === b.text && (a.cm ? a.cm.wrapper === b.cm?.wrapper && JSON.stringify(a.to) === JSON.stringify(b.to) : a.anchor?.node === b.anchor?.node && a.anchor?.offset === b.anchor?.offset);
   const valid = target => {
     if (!target || target.key !== getIdentity().key) return false;
     try {
@@ -17,8 +17,9 @@ export function createSelectionTracker({host,getIdentity,view = document,runtime
       if (cached && cached.key !== identity.key) cached = null;
       const selected = host.captureSelectionSnapshot(identity.key);
       if (selected?.text) {
+        const range = host.captureInsertionRange(selected,runtime.getSelection());
         const current = {key:identity.key,label:identity.label,document:host.getDocumentText(),text:selected.text,
-          range:host.captureInsertionRange(selected,runtime.getSelection()),cm:selected.codeMirror,to:selected.to};
+          range,anchor:range && {node:range.startContainer,offset:range.startOffset},cm:selected.codeMirror,to:selected.to};
         if (!fresh && sameSelection(current,consumed)) return null;
         cached = current;
         return cached;

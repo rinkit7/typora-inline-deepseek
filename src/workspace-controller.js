@@ -2,6 +2,7 @@ import {mountChatUI} from "../dist/chat-ui.js";
 import {createChatSession} from "./chat-session.js";
 import {createSelectionTracker} from "./selection-tracker.js";
 import {createDeepSeekWeb} from "./deepseek-web.js";
+import {DEEPSEEK_HOME,getConversationURL} from "./web-history.js";
 import {registerDeepSeekMenu,canInsertAtSnapshot} from "./web-provider.js";
 import {createAppearanceStore} from "./appearance.js";
 import {writeDiagnostic} from "./runtime-paths.js";
@@ -11,7 +12,7 @@ export function createWorkspaceChat(plugin,options = {}) {
   const view = document, runtime = window, host = plugin.editorSelection;
   const detached = !!options.detachedHost;
   const targets = new Map();
-  let disposed = false, transferring = false, pressedTarget = null;
+  let disposed = false, transferring = false, openingHistory = false, pressedTarget = null;
   const appearance = createAppearanceStore(runtime);
   let geometry = {left:null,top:48,width:460,height:appearance.loadReaderHeight()}, ui, interaction = null;
   const node = view.createElement("div");
@@ -74,7 +75,7 @@ export function createWorkspaceChat(plugin,options = {}) {
   const webpage = view.createElement("webview");
   webpage.setAttribute("partition","persist:typora-inline-deepseek");
   webpage.setAttribute("webpreferences","contextIsolation=yes,sandbox=yes,nodeIntegration=no,webSecurity=yes,backgroundThrottling=no");
-  webpage.setAttribute("src","https://chat.deepseek.com/");
+  webpage.setAttribute("src",DEEPSEEK_HOME);
   webpage.style.cssText = "position:absolute;left:0;top:58px;width:100%;height:calc(100% - 94px);display:flex;opacity:.01;pointer-events:none;z-index:0;background:white;";
   const app = view.createElement("div");
   app.style.cssText = "position:absolute;inset:0;z-index:2;pointer-events:none";
@@ -82,10 +83,10 @@ export function createWorkspaceChat(plugin,options = {}) {
   const shadow = app.attachShadow({mode:"open"});
   const mount = view.createElement("div"); mount.style.height = "100%"; shadow.appendChild(mount);
   const provider = createDeepSeekWeb({webview:webpage});
-  const session = createChatSession({provider:{subscribe:listener => provider.subscribe(listener),send:prompt => {
+  const session = createChatSession({provider:{subscribe:listener => provider.subscribe(listener),send:(prompt,url) => {
     const quote = session.getSnapshot().quote;
     if (!detached && quote?.key && quote.key !== plugin.getCurrentDocumentIdentity().key) throw Error("文档已切换，请重新选择正文后提问。");
-    return provider.send(prompt);
+    return provider.send(prompt,url);
   }}});
   const tracker = detached ? null : createSelectionTracker({host,getIdentity:() => plugin.getCurrentDocumentIdentity(),view,runtime});
   const targetId = () => runtime.reqnode("crypto").randomUUID();
@@ -98,7 +99,10 @@ export function createWorkspaceChat(plugin,options = {}) {
     const snapshot = {...target,targetId:id}; targets.set(id,snapshot);
     return snapshot;
   }
-  function exportPayload() {return {state:{session:session.export(),geometry},url:provider.getURL(),selection:session.getSnapshot().quote?.text || ""};}
+  function exportPayload() {
+    const chat = session.export();
+    return {state:{session:chat,geometry},url:chat.conversationURL || DEEPSEEK_HOME,selection:chat.quote?.text || ""};
+  }
   function askSelection(target) {
     const current = remember(target);
     if (!current) {reveal(); return;}
@@ -128,14 +132,17 @@ export function createWorkspaceChat(plugin,options = {}) {
       session.askSelection(payload.selectionContext);
     } else if (!payload.preserveConversation) {
       if (payload.state?.geometry) {geometry = {...payload.state.geometry}; applyGeometry();}
-      provider.navigate(payload.url || "https://chat.deepseek.com/");
-      session.restore(payload.state?.session || {});
+      const chat = payload.state?.session;
+      const conversationURL = getConversationURL(chat?.conversationURL || payload.url) || DEEPSEEK_HOME;
+      provider.navigate(conversationURL);
+      session.restore({...chat,conversationURL});
       if (payload.selectionContext) session.askSelection(payload.selectionContext);
     }
     reveal(); diagnose("session-restored");
   }
   async function transfer() {
     if (transferring || session.getSnapshot().sending || session.getSnapshot().responding) throw Error("请等回答结束后再切换窗口。");
+    if (openingHistory) throw Error("请等历史问答加载完成后再切换窗口。");
     transferring = true;
     try {
       const payload = exportPayload();
@@ -144,7 +151,14 @@ export function createWorkspaceChat(plugin,options = {}) {
   }
   async function openHistory(url) {
     if (session.getSnapshot().sending || session.getSnapshot().responding) throw Error("请等当前回答结束后再切换历史问答。");
-    const reply = await provider.openHistory(url);
+    if (transferring || openingHistory) throw Error("正在切换问答，请稍候。");
+    openingHistory = true;
+    try {
+      const reply = await provider.openHistory(url);
+      if (!disposed) restoreHistory(reply);
+    } finally {openingHistory = false;}
+  }
+  function restoreHistory(reply) {
     const current = session.export();
     const quotedTarget = targets.get(current.quote?.targetId);
     targets.clear(); if (quotedTarget) targets.set(quotedTarget.targetId,quotedTarget); tracker?.clear();
@@ -153,11 +167,11 @@ export function createWorkspaceChat(plugin,options = {}) {
     // answer in page order so earlier exchanges stay readable.
     const restored = (reply.messages || []).filter(entry => ["user","assistant"].includes(entry.role) && entry.text)
       .map(entry => ({id:targetId(),role:entry.role,text:entry.text,imported:true}));
-    const messages = url === "https://chat.deepseek.com/" ? [] :
+    const messages = reply.url === DEEPSEEK_HOME ? [] :
       restored.length ? restored : reply.text ? [{id:targetId(),role:"assistant",text:reply.text,imported:true}] : [];
     // Imported turns are a snapshot. Only a new submit creates a live answer
     // target; background reads must never overwrite a historical answer.
-    session.restore({...current,messages,contextTargetId:null,view:"chat"},{resume:false});
+    session.restore({...current,messages,conversationURL:reply.url,contextTargetId:null,view:"chat"});
     session.notify(messages.length ? `已打开网页历史，共 ${messages.length} 条消息；继续提问将接在此会话后。${reply.truncated ? "部分单条消息过长，已截断；完整内容请在网页查看。" : ""}` : "已打开新问答");
   }
   async function insert(text,id) {
@@ -168,12 +182,15 @@ export function createWorkspaceChat(plugin,options = {}) {
     if (!canInsertAtSnapshot(target,identity,host.getDocumentText())) throw Error("原文档已改变或插入位置已失效，请复制回答后手动插入。");
     const content = `\n\n${text}\n\n`;
     if (target.cm) {
-      if (!target.cm.wrapper.isConnected || !view.getElementById("write")?.contains(target.cm.wrapper)) throw Error("原选区已失效。");
+      if (!target.cm.wrapper.isConnected || target.cm.wrapper.CodeMirror !== target.cm.editor || !view.getElementById("write")?.contains(target.cm.wrapper)) throw Error("原选区已失效。");
       target.cm.editor.replaceRange(content,target.to,target.to);
     } else {
-      if (!host.isChatCaretRangeUsable(target.range)) throw Error("原选区已失效。");
-      view.getElementById("write").focus();
-      const selection = runtime.getSelection(); selection.removeAllRanges(); selection.addRange(target.range.cloneRange());
+      const {range,anchor} = target;
+      view.getElementById("write")?.focus();
+      if (!anchor || !range?.collapsed || range.startContainer !== anchor.node || range.startOffset !== anchor.offset || !host.isChatCaretRangeUsable(range)) {
+        throw Error("原选区已失效，请复制回答后手动插入。");
+      }
+      const selection = runtime.getSelection(); selection.removeAllRanges(); selection.addRange(range.cloneRange());
       if (!view.execCommand("insertText",false,content)) throw Error("插入失败，请复制回答后手动插入。");
     }
     session.notify("已插入原文档，可使用 Ctrl+Z 撤销。");
@@ -186,7 +203,8 @@ export function createWorkspaceChat(plugin,options = {}) {
     if (state.visible && !webpage.isConnected) node.insertBefore(webpage,app);
     provider.setActive(state.visible && !state.sending);
     webpage.style.opacity = state.view === "web" ? "1" : ".01";
-    webpage.style.pointerEvents = state.view === "web" ? "auto" : "none";
+    if (state.sending) webpage.blur();
+    webpage.style.pointerEvents = state.view === "web" && !state.sending ? "auto" : "none";
     webpage.style.zIndex = state.view === "web" ? "1" : "0";
   });
   // An answer that settles while the user reads elsewhere deserves a cue:
@@ -203,7 +221,7 @@ export function createWorkspaceChat(plugin,options = {}) {
   ui = mountChatUI(mount,shadow,{session,detached,appearance,
     actions:{transfer,close:() => detached ? options.onClose?.() : session.hide(),
       listHistory:() => provider.listHistory(),openHistory,
-      newConversation:() => openHistory("https://chat.deepseek.com/"),
+      newConversation:() => openHistory(DEEPSEEK_HOME),
       viewHistoryWeb:() => {session.setView("web"); session.notify("可在网页查看完整记录；展开侧栏后，可返回历史列表刷新并选择会话。");},
       copy:async text => {if (!await plugin.copyTextToClipboard(text)) throw Error("复制失败。"); session.notify("回答已复制。");},
       insert,reload:() => provider.reload(),pause:value => provider.setPaused(value),

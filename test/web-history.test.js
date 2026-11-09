@@ -25,8 +25,8 @@ test("switching web history rejects old in-flight reads and restores the chosen 
   const page = {addEventListener() {},removeEventListener() {},getURL:() => url,setAttribute:(key,value) => {url = value; navigations.push(value);},executeJavaScript:async code => {
     if (code.includes('inspectWebPageReady')) return true;
     if (code.includes('inspectWebHistory')) return {loggedIn:true,items:[{id:'new',title:'saved question',url:'https://chat.deepseek.com/a/chat/s/new'}]};
-    if (code.includes('.conversation()')) return {loggedIn:true,generating:false,count:2,text:'chosen answer',messages:[{role:'user',text:'chosen question'},{role:'assistant',text:'chosen answer'}]};
-    if (code.includes('.reply()')) {reads++; if (reads === 1) return new Promise(resolve => {completeOld = resolve;}); return {count:1,text:'chosen answer',loggedIn:true,generating:false};}
+    if (code.includes('.conversation()')) return {url,loggedIn:true,generating:false,count:2,text:'chosen answer',messages:[{role:'user',text:'chosen question'},{role:'assistant',text:'chosen answer'}]};
+    if (code.includes('.reply()')) {reads++; if (reads === 1) return new Promise(resolve => {completeOld = resolve;}); return {url,count:1,text:'chosen answer',loggedIn:true,generating:false};}
     throw Error('must not send a message');
   }};
   const provider = createDeepSeekWeb({webview:page,interval:60000,historyPause:async () => {}});
@@ -37,7 +37,7 @@ test("switching web history rejects old in-flight reads and restores the chosen 
     const reply = await provider.openHistory('/a/chat/s/new');
     assert.equal(reply.text,'chosen answer');
     assert.deepEqual(reply.messages.map(message => [message.role,message.text]),[['user','chosen question'],['assistant','chosen answer']],'a history session carries its whole conversation');
-    completeOld({text:'wrong old answer'}); await new Promise(resolve => setTimeout(resolve,0));
+    completeOld({text:'wrong old answer',url:'https://chat.deepseek.com/a/chat/s/old'}); await new Promise(resolve => setTimeout(resolve,0));
     assert.deepEqual(events,[]);
     await provider.poll(); assert.deepEqual(events,['chosen answer']);
     assert.deepEqual(navigations,['https://chat.deepseek.com/a/chat/s/new']);
@@ -80,7 +80,7 @@ test("opening history waits for progressively mounted messages to stabilize with
     assert.ok(script.includes('.conversation()'),'history must only inspect the webpage');
     reads++;
     const turns = reads < 3 ? 1 : 3;
-    return {loggedIn:true,generating:false,count:turns,text:`answer ${turns}`,messages:Array.from({length:turns},(_,i) => [{role:'user',text:`question ${i + 1}`},{role:'assistant',text:`answer ${i + 1}`}]).flat()};
+    return {url,loggedIn:true,generating:false,count:turns,text:`answer ${turns}`,messages:Array.from({length:turns},(_,i) => [{role:'user',text:`question ${i + 1}`},{role:'assistant',text:`answer ${i + 1}`}]).flat()};
   }};
   const provider = createDeepSeekWeb({webview:page,interval:60000,historyPause:async () => {}});
   try {
@@ -152,8 +152,8 @@ test("history picker uses webpage records, preserves the draft and quote, and wr
         node.executeJavaScript = async script => {
           if (script.includes('inspectWebPageReady')) return true;
           if (script.includes('inspectWebHistory')) return {loggedIn:true,items:[{id:'saved',title:'缓存知识笔记',dateLabel:'2026-11-06',url:'https://chat.deepseek.com/a/chat/s/saved'}]};
-          if (script.includes('.conversation()')) return {loggedIn:true,generating:false,count:1,text:currentText,messages:[{role:'user',text:'较早的提问'},{role:'assistant',text:currentText}]};
-          if (script.includes('inspectDeepSeekReply')) return {loggedIn:true,count:1,text:currentText,generating:false};
+          if (script.includes('.conversation()')) return {url,loggedIn:true,generating:false,count:1,text:currentText,messages:[{role:'user',text:'较早的提问'},{role:'assistant',text:currentText}]};
+          if (script.includes('inspectDeepSeekReply')) return {url,loggedIn:true,count:1,text:currentText,generating:false};
           throw Error('history must not send');
         };
         const set = node.setAttribute.bind(node);
@@ -195,6 +195,15 @@ test("history picker uses webpage records, preserves the draft and quote, and wr
     assert.equal((await findByText(mount,'保留的引用',{selector:'summary'})).textContent,'保留的引用');
     await waitFor(() => assert.equal(url,'https://chat.deepseek.com/a/chat/s/saved'));
     assert.equal((await findByRole(mount,'button',{name:'插入文档'})).disabled,true,'old webpage answers have no live insertion target');
+    fireEvent.click(await findByRole(mount,'button',{name:'网页',exact:true}));
+    await findByRole(mount,'generic',{name:'DeepSeek 网页区域'});
+    url = 'https://chat.deepseek.com/a/chat/s/other';
+    currentText = '另一会话的回答';
+    fireEvent.click(await findByRole(mount,'button',{name:'对话',exact:true}));
+    fireEvent.click(await findByRole(mount,'button',{name:'发送问题'}));
+    assert.match((await findByRole(mount,'alert')).textContent,/网页会话已切换/);
+    assert.equal((await findByRole(mount,'textbox',{name:'输入问题'})).value,'尚未发送的草稿');
+    assert.equal((await findByText(mount,'从网页历史读取的回答')).textContent,'从网页历史读取的回答');
     controller.dispose(); controller = null;
     assert.ok(writes.every(([file]) => !/history|conversation/i.test(file)));
     assert.ok(writes.every(([,text]) => !text.includes('从网页历史读取的回答') && !text.includes('尚未发送的草稿')));

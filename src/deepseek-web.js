@@ -1,5 +1,5 @@
-import {createWebviewLifecycle,executeWebScript,fillWebComposer,submitWebComposer} from "./web-provider.js";
-import {inspectWebHistory,validateHistoryURL} from "./web-history.js";
+import {createWebviewLifecycle,executeWebScript,fillWebComposer,sendWebQuestion,submitWebComposer} from "./web-provider.js";
+import {conversationAt,DEEPSEEK_HOME,getConversationURL,inspectWebHistory,validateHistoryURL} from "./web-history.js";
 
 // Build the in-page readers for the isolated DeepSeek webpage. All output is
 // inert Markdown text. The builder is serialized into the page as a whole, so
@@ -8,7 +8,7 @@ import {inspectWebHistory,validateHistoryURL} from "./web-history.js";
 export function inspectDeepSeekReplyBuilder() {
   const messageLimit = 200000;
   let budget = messageLimit;
-  const citations = / -\d+(?:-\d+)*(?=[\s。．！!？?；;]|$)/g;
+  const citationMarker = '.ds-markdown-citation,[data-citation],[data-citation-id],[data-citation-index],[role="doc-noteref"]';
   function codeBlock(pre,language = "") {
     const code = pre.querySelector("code"), clean = (code || pre).cloneNode(true);
     clean.querySelectorAll('button,[role="button"],[aria-hidden="true"],script,style').forEach(node => node.remove());
@@ -20,7 +20,7 @@ export function inspectDeepSeekReplyBuilder() {
   }
   function markdown(node,depth = 0) {
     if (!node || depth > 40 || budget <= 0) return "";
-    if (node.nodeType === 3) {const value = String(node.nodeValue || "").slice(0,budget); budget -= value.length; return value.replace(citations,"");}
+    if (node.nodeType === 3) {const value = String(node.nodeValue || "").slice(0,budget); budget -= value.length; return value;}
     if (node.nodeType !== 1) return "";
     const tag = node.tagName.toLowerCase();
     if (["script","style","iframe","object","embed","img","svg","button","input"].includes(tag)) return "";
@@ -28,7 +28,7 @@ export function inspectDeepSeekReplyBuilder() {
       const source = node.querySelector('annotation[encoding="application/x-tex"]')?.textContent;
       if (source) {const value = source.slice(0,budget); budget -= value.length; return node.parentElement?.classList?.contains("katex-display") ? `\n\n$$\n${value}\n$$\n\n` : `$${value}$`;}
     }
-    if (node.getAttribute("aria-hidden") === "true") return "";
+    if (node.getAttribute("aria-hidden") === "true" || node.matches(citationMarker)) return "";
     if (tag === "pre") return codeBlock(node);
     // Recognize code wrappers by structure and toolbar-only surrounding text.
     // Do not strip words like "复制" from ordinary prose or from the code.
@@ -63,8 +63,44 @@ export function inspectDeepSeekReplyBuilder() {
     budget = messageLimit;
     return markdown(node).trim().slice(0,messageLimit);
   }
-  function reply() {
-    const nodes = [...document.querySelectorAll(".ds-markdown")], last = nodes.at(-1);
+  const visibleItems = list => list?.querySelector(".ds-virtual-list-visible-items");
+  const rowKey = "data-virtual-list-item-key";
+  const waitForRender = () => new Promise(resolve => setTimeout(resolve,80));
+  function findMessageList() {
+    const answer = document.querySelector(".ds-assistant-message-main-content,.ds-markdown");
+    if (answer) {
+      const list = answer.closest(".ds-virtual-list");
+      return visibleItems(list) ? list : null;
+    }
+    // A virtual viewport can contain only a question. Use the keyed message
+    // list itself when there is no assistant node to locate it by.
+    const lists = [...document.querySelectorAll(".ds-virtual-list")].filter(list => {
+      const items = visibleItems(list);
+      return items?.querySelector("[" + rowKey + "]") && !list.closest('aside,nav,[role="navigation"]') && !items.querySelector('a[href*="/a/chat/s/"]');
+    });
+    return lists.length === 1 ? lists[0] : null;
+  }
+  function mountedWindow(list) {
+    const items = visibleItems(list);
+    const rows = [...(items?.children || [])].filter(row => row.hasAttribute(rowKey));
+    const first = rows[0], last = rows.at(-1), height = list.clientHeight;
+    if (!first || !height) return null;
+    const top = list.scrollTop, bottom = Math.max(0,list.scrollHeight - height);
+    const origin = list.getBoundingClientRect().top + list.clientTop - top;
+    const start = first.getBoundingClientRect().top - origin;
+    const end = last.getBoundingClientRect().bottom - origin;
+    if (!(end > start)) return null;
+    const style = node => document.defaultView.getComputedStyle(node);
+    const px = value => parseFloat(value) || 0;
+    const before = px(style(first).marginTop) + (top <= 2 ? px(style(list).paddingTop) + px(style(items).paddingTop) : 0);
+    const after = px(style(last).marginBottom) + (top >= bottom - 2 ? px(style(list).paddingBottom) + px(style(items).paddingBottom) : 0);
+    // scrollTop changes before the virtual list has rendered that position.
+    // Measure the mounted rows in scroll coordinates, including overscan.
+    if (bottom > 2 && (start - before > top + 2 || end + after < top + height - 2)) return null;
+    return {top,bottom,height,start,end};
+  }
+  function reply(list = findMessageList()) {
+    const nodes = [...(list || document).querySelectorAll(".ds-markdown")], last = nodes.at(-1);
     const textarea = document.querySelector("textarea");
     let scope = textarea?.parentElement, generating = !!textarea?.disabled;
     for (let i = 0; scope && i < 6 && scope !== document.body; i++,scope = scope.parentElement) {
@@ -76,10 +112,35 @@ export function inspectDeepSeekReplyBuilder() {
         if (!disabled && box.width && box.height && (/stop|停止|取消/i.test(label) || (!textarea.value.trim() && button.matches(".ds-button--primary.ds-button--filled.ds-button--circle")))) generating = true;
       }
     }
-    // DeepSeek appends web-citation markers like " -2-4-10" before sentence
-    // punctuation or line breaks; they are page furniture, not answer content.
-    // The leading space is required so real ranges (2024-2025) survive.
-    return {count:nodes.length,text:last ? readMarkdown(last) : "",generating,loggedIn:!!textarea,url:document.location?.href};
+    const row = last?.closest("[" + rowKey + "]");
+    const key = row ? "row:" + row.getAttribute(rowKey) : last ? "block:" + nodes.length : null;
+    const viewport = list && mountedWindow(list);
+    const atEnd = !list || !!viewport && viewport.top >= viewport.bottom - 2;
+    return {count:nodes.length,key,atEnd,text:last ? readMarkdown(last) : "",generating,loggedIn:!!textarea,url:document.location.href};
+  }
+  async function sendBaseline(expectedURL,conversationAt) {
+    const matches = () => conversationAt(document.location) === expectedURL;
+    if (!matches()) throw Error("DeepSeek 网页会话已切换，请从「历史」重新选择。");
+    const list = findMessageList();
+    let result = reply(list);
+    if (!list || result.atEnd || !result.loggedIn || result.generating) return result;
+    const originalTop = list.scrollTop, originalBehavior = list.style.scrollBehavior;
+    const deadline = Date.now() + 1800;
+    list.style.scrollBehavior = "auto";
+    try {
+      while (Date.now() < deadline) {
+        const bottom = Math.max(0,list.scrollHeight - list.clientHeight);
+        if (list.scrollTop < bottom - 2) list.scrollTop = bottom;
+        await waitForRender();
+        if (!list.isConnected || !matches()) throw Error("DeepSeek 网页会话已切换，请从「历史」重新选择。");
+        result = reply(list);
+        if (result.atEnd || result.generating) break;
+      }
+      return result;
+    } finally {
+      if (!result.atEnd && list.isConnected && matches()) list.scrollTop = originalTop;
+      list.style.scrollBehavior = originalBehavior;
+    }
   }
   // Read the whole visible conversation of a loaded history session: every
   // user message and every assistant answer in document order. User bubbles
@@ -87,11 +148,10 @@ export function inspectDeepSeekReplyBuilder() {
   // containing an answer block are walked further, leaf subtrees without one
   // are user text; page furniture lines (action labels, thinking headers,
   // clocks) are dropped.
-  function conversation() {
+  function conversation(list = findMessageList()) {
     const marks = [...document.querySelectorAll(".ds-markdown")];
-    const textarea = document.querySelector("textarea");
-    const loggedIn = !!textarea;
-    if (!marks.length) return {messages:[],count:0,text:"",generating:!!textarea?.disabled,loggedIn};
+    const virtualItems = visibleItems(list);
+    if (!marks.length && !virtualItems) return {...reply(list),messages:[]};
     const skipLines = new Set(["复制","已复制","重新生成","继续生成","编辑","删除","复制代码","下载"]);
     const messages = [];
     let truncated = false;
@@ -133,13 +193,11 @@ export function inspectDeepSeekReplyBuilder() {
       if (budget <= 0) truncated = true;
       messages.push({role:"assistant",text});
     };
-    const virtualList = marks[0].closest('.ds-virtual-list');
-    const virtualItems = virtualList?.querySelector('.ds-virtual-list-visible-items');
     if (virtualItems) {
       // Offscreen messages are unmounted. Read keyed message rows, never the
       // page title, composer or auxiliary rendering trees.
       for (const row of virtualItems.children) {
-        const webKey = row.getAttribute('data-virtual-list-item-key');
+        const webKey = row.getAttribute(rowKey);
         if (webKey == null) continue;
         const answers = [...row.querySelectorAll('.ds-assistant-message-main-content')];
         const blocks = answers.length ? answers : [...row.querySelectorAll('.ds-markdown')];
@@ -148,7 +206,7 @@ export function inspectDeepSeekReplyBuilder() {
         else pushUser(row,true);
         for (let i = start; i < messages.length; i++) messages[i].webKey = `${webKey}:${i - start}`;
       }
-      return {...reply(),messages,truncated,virtual:true};
+      return {...reply(list),messages,truncated,virtual:true};
     }
     let container = marks[0].parentElement;
     while (container && !container.contains(marks.at(-1))) container = container.parentElement;
@@ -175,42 +233,42 @@ export function inspectDeepSeekReplyBuilder() {
     return {...reply(),messages,truncated};
   }
   async function history() {
-    const list = document.querySelector('.ds-assistant-message-main-content,.ds-markdown')?.closest('.ds-virtual-list');
-    if (!list?.querySelector('.ds-virtual-list-visible-items')) return conversation();
-    const pause = () => new Promise(resolve => setTimeout(resolve,80));
+    const list = findMessageList();
+    if (!list) return conversation();
     const records = new Map(), deadline = Date.now() + 25000, sourceURL = document.location.href;
     const originalTop = list.scrollTop, originalBehavior = list.style.scrollBehavior;
     let truncated = false, completed = false;
     list.style.scrollBehavior = 'auto';
     try {
-      list.scrollTop = 0;
-      for (let step = 0; step < 1000 && Date.now() < deadline; step++) {
-        let snapshot, signature = '', stable = 0;
-        for (let attempt = 0; attempt < 12 && Date.now() < deadline; attempt++) {
-          await pause();
+      let requestedTop = 0;
+      while (Date.now() < deadline) {
+        list.scrollTop = requestedTop;
+        let snapshot, viewport, signature = '', stable = 0;
+        const windowDeadline = Math.min(deadline,Date.now() + 2000);
+        while (Date.now() < windowDeadline) {
+          await waitForRender();
           if (!list.isConnected || document.location.href !== sourceURL) throw Error('读取期间网页会话已改变，请重新选择。');
-          snapshot = conversation();
-          const next = JSON.stringify(snapshot.messages);
+          const mounted = mountedWindow(list);
+          if (!mounted || Math.abs(mounted.top - Math.min(requestedTop,mounted.bottom)) > 2) {signature = ''; stable = 0; continue;}
+          const candidate = conversation(list);
+          if (!candidate.loggedIn || candidate.generating || !candidate.messages.length) {signature = ''; stable = 0; continue;}
+          const next = JSON.stringify([mounted,candidate.messages]);
           stable = next === signature ? stable + 1 : 1; signature = next;
-          if (snapshot.messages.length && stable >= 3) break;
+          if (stable >= 3) {snapshot = candidate; viewport = mounted; break;}
         }
-        if (!snapshot?.loggedIn || !snapshot.virtual || snapshot.generating || stable < 3) throw Error('历史消息仍在加载或生成，请稍后重新选择会话。');
+        if (!snapshot) throw Error('历史消息仍在加载或生成，请稍后重新选择会话。');
         for (const message of snapshot.messages) records.set(message.webKey,message);
         truncated ||= snapshot.truncated;
-        const bottom = Math.max(0,list.scrollHeight - list.clientHeight);
-        if (list.scrollTop >= bottom - 2) {completed = true; break;}
-        const rows = list.querySelector('.ds-virtual-list-visible-items').children;
-        const last = rows[rows.length - 1];
+        const {top,bottom,height,end} = viewport;
+        if (top >= bottom - 2) {completed = true; break;}
         // Mounted long answers already have their complete DOM. Advance past
-        // the last read row with overlap rather than scrolling inside it.
-        const throughLast = last ? last.getBoundingClientRect().bottom - list.getBoundingClientRect().top - list.clientHeight * .2 : 0;
-        const nextTop = Math.min(bottom,list.scrollTop + Math.max(120,list.clientHeight * .8,throughLast));
-        if (nextTop <= list.scrollTop) throw Error('无法继续读取网页历史，请在网页确认后重试。');
-        list.scrollTop = nextTop;
+        // most of the covered area, keeping overlap with the next viewport.
+        requestedTop = Math.min(bottom,Math.floor(end - height * .2));
+        if (requestedTop <= top) throw Error('无法继续读取网页历史，请在网页确认后重试。');
       }
       if (!completed) throw Error('会话较长，尚未完整读取，请在网页确认加载后重试。');
       const messages = [...records.values()].map(({webKey,...message}) => message);
-      return {...reply(),messages,truncated};
+      return {...reply(list),messages,truncated};
     } finally {
       // Follow-up sends need the latest answer as their baseline. Failed
       // reads restore the original webpage position instead.
@@ -218,7 +276,7 @@ export function inspectDeepSeekReplyBuilder() {
       list.style.scrollBehavior = originalBehavior;
     }
   }
-  return {reply,conversation,history};
+  return {reply,sendBaseline,conversation,history};
 }
 
 // In-process wrapper; the webview path serializes the builder instead.
@@ -234,12 +292,22 @@ export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900,hi
   const conversationScript = `(${inspectDeepSeekReplyBuilder.toString()})().conversation()`;
   const historyScript = `(${inspectDeepSeekReplyBuilder.toString()})().history()`;
   const read = () => executeWebScript(webview,replyScript,false,2200);
+  const pageURL = () => {try {return webview.getURL();} catch (_) {return "";}};
+  const currentURL = () => getConversationURL(pageURL());
+  const pageChanged = () => Error("DeepSeek 网页会话已切换，请从「历史」重新选择后再发送。");
   async function poll() {
     if (disposed || !active || polling || paused || suspended || switching || historyFailed) return;
-    try {if (new URL(webview.getURL()).origin !== "https://chat.deepseek.com") return;} catch (_) {return;}
+    const address = pageURL();
+    if (!address) return;
+    const url = getConversationURL(address);
     polling = true;
     const started = epoch;
-    try {const reply = await read(); if (!disposed && active && !suspended && !switching && epoch === started) for (const listener of listeners) listener(reply);}
+    try {
+      const reply = url ? await read() : {url:null};
+      if (disposed || !active || paused || suspended || switching || epoch !== started || currentURL() !== url) return;
+      if (url && getConversationURL(reply?.url) !== url) return;
+      for (const listener of listeners) listener({...reply,url});
+    }
     catch (_) {} finally {polling = false;}
   }
   const timer = setInterval(poll,interval);
@@ -248,20 +316,37 @@ export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900,hi
     setActive(value) {active = !!value; if (active) void poll();},
     setPaused(value) {paused = !!value; if (!paused) void poll();},
     setSuspended(value) {suspended = !!value; if (!suspended) void poll();},
-    async send(prompt) {
+    async send(prompt,conversationURL) {
       if (switching) throw Error("正在打开历史问答，请稍候。");
       if (historyFailed) throw Error("历史会话切换未完成，请重新选择会话后再发送。");
+      const target = validateHistoryURL(conversationURL || DEEPSEEK_HOME,{allowNew:true});
+      const started = epoch;
       await lifecycle.ensureReady();
-      if (new URL(webview.getURL()).origin !== "https://chat.deepseek.com") throw Error("请先切换网页，回到 DeepSeek 聊天页面。");
-      let baseline;
-      try {baseline = await read();} catch (_) {baseline = null;}
-      if (baseline?.generating) throw Error("DeepSeek 还在回答上一条问题，请等回答结束后发送。");
-      const filled = await executeWebScript(webview,`(${fillWebComposer.toString()})(${JSON.stringify(prompt)})`,true);
-      if (!filled.ok) {const error = Error(filled.reason); if (/登录/.test(filled.reason)) error.code = "LOGIN_REQUIRED"; throw error;}
-      const result = await executeWebScript(webview,`(${submitWebComposer.toString()})()`,true,7000);
-      if (!result.ok) throw Error(result.reason);
+      const address = pageURL();
+      const openURL = getConversationURL(address);
+      if (openURL !== target) {
+        if (!openURL && address && new URL(address).origin === new URL(DEEPSEEK_HOME).origin) {
+          throw Object.assign(Error("请先在 DeepSeek 网页登录并回到聊天页面。"),{code:"LOGIN_REQUIRED"});
+        }
+        throw pageChanged();
+      }
+      const baselineScript = `(${inspectDeepSeekReplyBuilder.toString()})().sendBaseline(${JSON.stringify(target)},(${conversationAt.toString()}))`;
+      const baseline = await executeWebScript(webview,baselineScript,false,3500);
+      if (disposed || started !== epoch || currentURL() !== target || getConversationURL(baseline?.url) !== target) throw pageChanged();
+      if (baseline.generating) throw Error("DeepSeek 还在回答上一条问题，请等回答结束后发送。");
+      if (baseline.atEnd === false) throw Error("请在 DeepSeek 网页滚到会话底部，等待最新消息加载后再发送。");
+      const args = [target,prompt,Date.now() + 6000].map(value => JSON.stringify(value)).join(",");
+      const script = `(${sendWebQuestion.toString()})(${args},(${conversationAt.toString()}),(${fillWebComposer.toString()}),(${submitWebComposer.toString()}))`;
+      const result = await executeWebScript(webview,script,true,7000);
+      if (!result?.ok) {
+        const error = Error(result?.reason || "网页未确认发送，请先查看网页状态。");
+        if (/登录/.test(error.message)) error.code = "LOGIN_REQUIRED";
+        throw error;
+      }
+      const url = getConversationURL(result.url);
+      if (disposed || started !== epoch || !url || (url !== target && target !== DEEPSEEK_HOME)) throw Error("网页已点击发送，但无法确认会话。请先查看网页状态。");
       paused = false;
-      return {baseline};
+      return {baseline:url === target ? baseline : null,url};
     },
     poll,
     async listHistory() {
@@ -273,43 +358,45 @@ export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900,hi
     },
     async openHistory(value) {
       const url = validateHistoryURL(value,{allowNew:true});
-      const sameURL = value => {
-        try {const page = new URL(value); return `${page.origin}${page.pathname}`.replace(/\/$/,"") === url.replace(/\/$/,"");} catch (_) {return false;}
-      };
       if (switching) throw Error("正在切换会话，请稍候。");
-      const previous = this.getURL();
+      const previous = currentURL();
       switching = true; epoch++;
       try {
-        if (url !== this.getURL()) webview.setAttribute("src",url);
-        else if (url === "https://chat.deepseek.com/") webview.reload?.();
+        if (url !== previous) webview.setAttribute("src",url);
+        else if (url === DEEPSEEK_HOME) webview.reload?.();
         const deadline = Date.now() + 12000;
         let signature = "", stableReads = 0;
         for (let attempt = 0; attempt < historyAttempts && !disposed && Date.now() < deadline; attempt++) {
           await historyPause(150);
-          if (!sameURL(this.getURL())) {signature = ""; stableReads = 0; continue;}
+          if (currentURL() !== url) {signature = ""; stableReads = 0; continue;}
           let reply;
           try {
             if (!await lifecycle.probe()) {signature = ""; stableReads = 0; continue;}
             reply = await executeWebScript(webview,conversationScript,false,4000);
           } catch (_) {signature = ""; stableReads = 0; continue;}
-          if (!reply?.loggedIn || reply.generating || reply.url && !sameURL(reply.url) || url !== "https://chat.deepseek.com/" && !reply.text) {signature = ""; stableReads = 0; continue;}
+          const hasMessages = !!(reply?.text || reply?.messages?.length);
+          const ready = reply?.loggedIn && !reply.generating && getConversationURL(reply.url) === url && hasMessages === (url !== DEEPSEEK_HOME);
+          if (!ready) {signature = ""; stableReads = 0; continue;}
           const current = JSON.stringify([reply.count,reply.messages,reply.text,reply.generating]);
           stableReads = current === signature ? stableReads + 1 : 1; signature = current;
           // Retry only readiness probes. A full scan failure must propagate;
           // silently retrying it can restart long scans or hide route changes.
           if (stableReads >= 3) {
             const result = reply.virtual ? await executeWebScript(webview,historyScript,false,30000) : reply;
-            if (disposed || !sameURL(this.getURL()) || result?.url && !sameURL(result.url)) throw Error('读取期间网页会话已改变，请重新选择。');
-            historyFailed = false; return result;
+            if (disposed || currentURL() !== url || getConversationURL(result?.url) !== url) throw Error('读取期间网页会话已改变，请重新选择。');
+            historyFailed = false; return {...result,url};
           }
         }
         throw Error("历史会话尚未加载完成，请在“网页”中确认后重试。");
-      } catch (error) {historyFailed = true; if (previous !== url) webview.setAttribute("src",previous); throw error;}
+      } catch (error) {historyFailed = true; if (!disposed && previous !== url) webview.setAttribute("src",previous || DEEPSEEK_HOME); throw error;}
       finally {switching = false;}
     },
-    getURL() {try {const url = new URL(webview.getURL()); return url.origin === "https://chat.deepseek.com" ? url.href : "https://chat.deepseek.com/";} catch (_) {return "https://chat.deepseek.com/";}},
-    navigate(url) {if (new URL(url).origin === "https://chat.deepseek.com" && url !== this.getURL()) webview.setAttribute("src",url);},
-    reload() {webview.reload();},
+    navigate(value) {
+      const url = validateHistoryURL(value,{allowNew:true});
+      epoch++; historyFailed = false;
+      if (url !== currentURL()) webview.setAttribute("src",url);
+    },
+    reload() {epoch++; webview.reload();},
     dispose() {disposed = true; active = false; clearInterval(timer); lifecycle.dispose(); listeners.clear();}
   };
 }

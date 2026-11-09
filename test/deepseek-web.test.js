@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {JSDOM} from "jsdom";
 import {browserEnvironment} from "./helpers/browser-env.js";
 import {inspectDeepSeekReply,inspectDeepSeekReplyBuilder,createDeepSeekWeb} from "../src/deepseek-web.js";
 
@@ -23,8 +24,8 @@ test("geometry gestures suspend answer extraction without clearing the user's pa
     assert.equal(reads,1,"ending a gesture must retain a manual pause");
     adapter.setPaused(false); await tick();
     assert.equal(reads,2);
-    finishRead({text:"latest answer"}); await tick();
-    assert.deepEqual(replies,[{text:"latest answer"}]);
+    finishRead({text:"latest answer",url:"https://chat.deepseek.com/"}); await tick();
+    assert.deepEqual(replies,[{text:"latest answer",url:"https://chat.deepseek.com/"}]);
   } finally {adapter.dispose();}
 });
 
@@ -49,35 +50,110 @@ test("the web adapter checks generation before filling and never retries an ambi
   let generating = true, confirmed = true;
   const page = {addEventListener:(name,fn) => listeners.set(name,fn),removeEventListener:name => listeners.delete(name),getURL:() => "https://chat.deepseek.com/",executeJavaScript:async code => {
     if (code.includes("inspectWebPageReady")) return true;
-    if (code.includes("inspectDeepSeekReply")) return {count:1,text:"old",generating};
-    if (code.includes("fillWebComposer")) {calls.push("fill"); return {ok:true};}
-    if (code.includes("submitWebComposer")) {calls.push("send"); return {ok:confirmed,reason:"not confirmed"};}
+    if (code.includes("inspectDeepSeekReply")) return {count:1,text:"old",generating,url:"https://chat.deepseek.com/"};
+    if (code.includes("sendWebQuestion")) {calls.push("send"); return {ok:confirmed,reason:"not confirmed",url:"https://chat.deepseek.com/"};}
     throw Error("unexpected script");
   }};
   const adapter = createDeepSeekWeb({webview:page,interval:60000});
   try {
     await assert.rejects(adapter.send("question"),/上一条/); assert.deepEqual(calls,[]);
     generating = false;
-    const result = await adapter.send("question"); assert.equal(result.baseline.text,"old"); assert.deepEqual(calls,["fill","send"]);
+    const result = await adapter.send("question"); assert.equal(result.baseline.text,"old"); assert.deepEqual(calls,["send"]);
     calls.length = 0; confirmed = false;
-    await assert.rejects(adapter.send("question"),/not confirmed/); assert.deepEqual(calls,["fill","send"]);
+    await assert.rejects(adapter.send("question"),/not confirmed/); assert.deepEqual(calls,["send"]);
   } finally {adapter.dispose(); assert.equal(listeners.size,0);}
 });
 
-test("web citation markers are stripped while real ranges survive", () => {
-  const env = browserEnvironment('<body><div class="ds-markdown"><p>它是一家公司。 -2-4-10</p><p>成立于 2023 年。 -7</p><p>时间范围是 2024-2025</p></div><div><textarea></textarea></div></body>');
+function composerPage(url) {
+  const {window} = new JSDOM('<div><textarea></textarea><button aria-label="Send">Send</button></div>',{url});
+  const input = window.document.querySelector("textarea"), button = window.document.querySelector("button");
+  const filled = [], sent = [];
+  input.addEventListener("input",() => filled.push(input.value));
+  button.getBoundingClientRect = () => ({width:30,height:30});
+  button.addEventListener("click",() => {sent.push(input.value); input.value = "";});
+  const execute = script => new Function("document","HTMLTextAreaElement","Event",`return ${script}`)(window.document,window.HTMLTextAreaElement,window.Event);
+  return {window,input,button,filled,sent,execute};
+}
+
+test("a send cannot fill a different conversation or an external guest after navigation", async () => {
+  const firstURL = "https://chat.deepseek.com/a/chat/s/first";
+  const first = composerPage(firstURL), other = composerPage("https://chat.deepseek.com/a/chat/s/other"), external = composerPage("https://outside.example/");
+  let current = other, navigateAfterBaseline, navigateWhenExecuting;
+  const adapter = createDeepSeekWeb({webview:{
+    addEventListener() {},removeEventListener() {},getURL:() => current.window.location.href,
+    async executeJavaScript(script) {
+      if (script.includes("inspectWebPageReady")) return true;
+      if (script.includes("sendWebQuestion") && navigateWhenExecuting) current = navigateWhenExecuting;
+      const result = await current.execute(script);
+      if (script.includes("().sendBaseline(") && navigateAfterBaseline) current = navigateAfterBaseline;
+      return result;
+    }
+  }});
+  try {
+    await assert.rejects(adapter.send("private selection",firstURL),/网页会话已切换/);
+    current = first; navigateAfterBaseline = external;
+    await assert.rejects(adapter.send("private selection",firstURL),/网页会话已切换/);
+    navigateAfterBaseline = null;
+    for (const page of [other,external]) {
+      current = first; navigateWhenExecuting = page;
+      await assert.rejects(adapter.send("private selection",firstURL),/网页会话已切换/);
+      assert.deepEqual(page.filled,[]);
+      assert.deepEqual(page.sent,[]);
+    }
+    assert.deepEqual(first.filled,[]);
+  } finally {adapter.dispose(); for (const page of [first,other,external]) page.window.close();}
+});
+
+test("a route change while waiting for the send button prevents the click", async () => {
+  const url = "https://chat.deepseek.com/a/chat/s/first", page = composerPage(url);
+  let timer;
+  page.button.disabled = true;
+  page.input.addEventListener("input",() => {
+    timer = setTimeout(() => {page.window.history.replaceState({},"","/a/chat/s/other"); page.button.disabled = false;},25);
+  });
+  const adapter = createDeepSeekWeb({webview:{
+    addEventListener() {},removeEventListener() {},getURL:() => page.window.location.href,
+    executeJavaScript:async script => script.includes("inspectWebPageReady") || await page.execute(script)
+  }});
+  try {
+    await assert.rejects(adapter.send("draft",url),/网页会话已切换/);
+    assert.deepEqual(page.filled,["draft"]);
+    assert.deepEqual(page.sent,[]);
+  } finally {clearTimeout(timer); adapter.dispose(); page.window.close();}
+});
+
+test("a confirmed first send binds follow-ups to the conversation created by its click", async () => {
+  const page = composerPage("https://chat.deepseek.com/");
+  page.button.addEventListener("click",() => {
+    if (page.window.location.pathname === "/") page.window.history.replaceState({},"","/a/chat/s/created");
+  });
+  const adapter = createDeepSeekWeb({webview:{
+    addEventListener() {},removeEventListener() {},getURL:() => page.window.location.href,
+    executeJavaScript:async script => script.includes("inspectWebPageReady") || await page.execute(script)
+  }});
+  try {
+    const result = await adapter.send("first question");
+    assert.equal(result.url,"https://chat.deepseek.com/a/chat/s/created");
+    await adapter.send("follow-up",result.url);
+    assert.deepEqual(page.sent,["first question","follow-up"]);
+  } finally {adapter.dispose(); page.window.close();}
+});
+
+test("only structured citation markers are removed, preserving negative numbers and ranges", () => {
+  const env = browserEnvironment('<body><div class="ds-markdown"><p>它是一家公司。 <sup data-citation="2">-2-4-10</sup></p><p>成立于 2023 年。 <a role="doc-noteref">-7</a></p><p>温度是 -5。时间范围是 2024-2025，参数为 -3-8。</p></div><div><textarea></textarea></div></body>');
   try {
     const result = inspectDeepSeekReply();
     assert.equal(result.text.includes("-2-4-10"),false,"multi part markers must go");
     assert.equal(result.text.includes(" -7"),false,"single markers must go");
     assert.equal(result.text.includes("2024-2025"),true,"real number ranges must survive");
+    assert.match(result.text,/温度是 -5。时间范围是 2024-2025，参数为 -3-8。/);
     assert.match(result.text,/它是一家公司。/);
     assert.match(result.text,/成立于 2023 年。/);
   } finally {env.dispose();}
 });
 
 test("code toolbars become fenced language metadata without altering code or nearby prose", () => {
-  const env = browserEnvironment('<body><div class="ds-markdown"><p>点击复制下载；以下是示例。 -7</p><div><div><span>csharp</span><div role="button">复制</div><div role="button">下载</div></div><pre><code class="language-csharp"></code></pre></div><div><div>python Copy Download</div><pre><code></code></pre></div><pre><code class="language-text"></code></pre><p>普通正文中的 csharp复制下载 应保留。</p></div></body>');
+  const env = browserEnvironment('<body><div class="ds-markdown"><p>点击复制下载；以下是示例。 <sup class="ds-markdown-citation">-7</sup></p><div><div><span>csharp</span><div role="button">复制</div><div role="button">下载</div></div><pre><code class="language-csharp"></code></pre></div><div><div>python Copy Download</div><pre><code></code></pre></div><pre><code class="language-text"></code></pre><p>普通正文中的 csharp复制下载 应保留。</p></div></body>');
   try {
     const codes = [...env.document.querySelectorAll("code")];
     codes[0].textContent = '[Required(ErrorMessage = "请输入电影名称")]\n  public string? Title { get; set; }\n';
@@ -100,7 +176,7 @@ test("code toolbars become fenced language metadata without altering code or nea
 test("conversation extraction restores every user question and assistant answer in page order", () => {
   const env = browserEnvironment('<body><div id="chat">'
     + '<div class="group"><div class="bubble">第一段提问内容</div><div class="answer"><div class="ds-markdown"><p>第一段回答内容。</p></div></div></div>'
-    + '<div class="group"><div class="bubble">复制<br/>真正的提问<br/>已深度思考（用时6秒）</div><div class="answer"><span class="ds-markdown"><p>第二段回答 -2-4-10</p></span></div></div>'
+    + '<div class="group"><div class="bubble">复制<br/>真正的提问<br/>已深度思考（用时6秒）</div><div class="answer"><span class="ds-markdown"><p>第二段回答 <sup data-citation-index="2">-2-4-10</sup></p></span></div></div>'
     + '<div class="group"><div class="ds-markdown"><p>第三段回答，没有提问。</p></div></div>'
     + '</div><div><textarea></textarea></div></body>');
   try {

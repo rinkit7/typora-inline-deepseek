@@ -53,6 +53,8 @@ test("one conversation state survives view changes and serialized window transfe
   const child = createChatSession({provider}); child.restore(JSON.parse(JSON.stringify(origin.export())));
   assert.equal(child.getSnapshot().messages[0].quote.text,"source");
   assert.equal(child.getSnapshot().messages[1].text,"**answer**");
+  child.receive({count:1,text:"stale reply from the reloaded page"});
+  assert.equal(child.getSnapshot().messages[1].text,"**answer**");
   assert.equal(child.getSnapshot().draft,"next"); assert.equal(child.getSnapshot().transparent,true);
   child.setView("chat"); assert.equal(child.getSnapshot().draft,"next");
   child.askSelection({text:"other",targetId:"another"}); assert.equal(child.getSnapshot().messages.length,2);
@@ -67,7 +69,7 @@ test("imported history stays immutable across window transfer while a new questi
   const origin = createChatSession({provider,clock:() => now});
   const child = createChatSession({provider,clock:() => now});
   try {
-    origin.restore({messages:history},{resume:false});
+    origin.restore({messages:history});
     child.restore(JSON.parse(JSON.stringify(origin.export())));
     child.receive({count:3,text:"unrelated webpage answer",generating:false});
     assert.deepEqual(child.getSnapshot().messages.map(m => m.text),history.map(m => m.text));
@@ -77,4 +79,46 @@ test("imported history stays immutable across window transfer while a new questi
     assert.deepEqual(child.getSnapshot().messages.map(m => m.text),[...history.map(m => m.text),"third question","third answer"]);
     assert.equal(child.getSnapshot().responding,false);
   } finally {origin.dispose(); child.dispose();}
+});
+
+test("a pending answer only accepts its own message and remains fixed after settling", async () => {
+  const url = "https://chat.deepseek.com/a/chat/s/current";
+  const baseline = {url,count:2,key:"row:previous",text:"previous answer"};
+  const live = {url,count:2,key:"row:new",text:"new answer",generating:true,atEnd:true};
+  let now = 0;
+  const session = createChatSession({provider:{send:async (prompt,selectedURL) => {
+    assert.equal(selectedURL,url);
+    return {url,baseline};
+  }},clock:() => now});
+  try {
+    session.restore({conversationURL:url});
+    assert.equal(await session.submit("question"),true);
+    session.receive({...baseline,count:1});
+    session.receive({...live,key:"row:older",text:"older answer",atEnd:false});
+    assert.equal(session.getSnapshot().messages.at(-1).text,"");
+    session.receive(live);
+    session.receive({...live,key:"row:unrelated",text:"another message"});
+    assert.equal(session.getSnapshot().messages.at(-1).text,"new answer");
+    now = 3000;
+    session.receive({...live,generating:false});
+    assert.equal(session.getSnapshot().responding,false);
+    session.receive({...live,text:"regenerated later"});
+    session.receive({...live,url:"https://chat.deepseek.com/a/chat/s/other",text:"another conversation"});
+    assert.equal(session.getSnapshot().messages.at(-1).text,"new answer");
+    assert.equal(session.getSnapshot().responding,false);
+  } finally {session.dispose();}
+});
+
+test("switching the guest conversation during generation cannot attach that page's reply", async () => {
+  const url = "https://chat.deepseek.com/a/chat/s/current";
+  const session = createChatSession({provider:{send:async () => ({url,baseline:null})}});
+  try {
+    await session.submit("question");
+    session.receive({url,key:"row:mine",text:"partial",generating:true});
+    session.receive({url:"https://chat.deepseek.com/a/chat/s/other",key:"row:mine",text:"other answer"});
+    assert.equal(session.getSnapshot().messages.at(-1).text,"partial");
+    assert.equal(session.getSnapshot().conversationURL,url);
+    assert.equal(session.getSnapshot().responding,false);
+    assert.match(session.getSnapshot().error,/会话已切换/);
+  } finally {session.dispose();}
 });

@@ -86,7 +86,7 @@ test('the first live poll must not replace an earlier history answer with the ne
   withConversation(longTurns,{},reader => {
     const session = createChatSession();
     try {
-      session.restore({messages:reader.conversation().messages},{resume:true});
+      session.restore({messages:reader.conversation().messages});
       session.receive(reader.reply());
       const answers = session.getSnapshot().messages.filter(m => m.role === 'assistant');
       assert.deepEqual(answers.map(m => m.text[0]),['1','2','3'],'Each answer must remain paired with its own question after synchronization');
@@ -94,27 +94,95 @@ test('the first live poll must not replace an earlier history answer with the ne
   });
 });
 
-test('real DeepSeek virtual-list rows are collected across scrolling without page titles or duplicated turns', async () => {
+function virtualHistory(rows,{viewport = 300,initialTop,delay = () => 0} = {}) {
   const env = browserEnvironment('<body><main><div>Page title Page title</div><div class="ds-virtual-list"><div class="ds-virtual-list-visible-items"></div></div><textarea></textarea><div>AI disclaimer</div></main></body>');
+  const list = env.document.querySelector('.ds-virtual-list'), items = list.firstElementChild;
+  let totalHeight = 0, timer;
+  const bounds = rows.map(row => {
+    const top = totalHeight;
+    totalHeight += row.height;
+    return {...row,top,bottom:totalHeight};
+  });
+  const maxTop = Math.max(0,totalHeight - viewport);
+  let position = initialTop ?? maxTop;
+  const render = () => {
+    const mounted = bounds.filter(row => row.top < position + viewport && row.bottom > position);
+    items.innerHTML = mounted.map(row => `<div data-virtual-list-item-key="${row.key}">${row.html}</div>`).join('');
+    [...items.children].forEach((element,index) => {
+      const row = mounted[index];
+      element.getBoundingClientRect = () => ({top:row.top - position,bottom:row.bottom - position});
+    });
+  };
+  Object.defineProperties(list,{clientHeight:{value:viewport},scrollHeight:{value:totalHeight},scrollTop:{
+    get:() => position,
+    set:value => {
+      position = Math.max(0,Math.min(maxTop,value));
+      clearTimeout(timer);
+      const lag = delay(position);
+      if (lag) timer = setTimeout(render,lag);
+      else render();
+    }
+  }});
+  render();
+  const reader = new Function('document',`return (${inspectDeepSeekReplyBuilder.toString()})()`)(env.document);
+  return {list,maxTop,reader,dispose() {clearTimeout(timer); env.dispose();}};
+}
+
+function virtualTurns(count,height = 150) {
+  return Array.from({length:count},(_,index) => {
+    const n = index + 1;
+    return [
+      {height,key:`q${n}`,html:`<div>question ${n}</div><button>复制</button>`},
+      {height,key:`a${n}`,html:`<div class="ds-markdown ds-assistant-message-main-content"><p>answer ${n}</p></div><div role="button">重新生成</div>`}
+    ];
+  }).flat();
+}
+
+test('real DeepSeek virtual-list rows are collected across scrolling without page titles or duplicated turns', async () => {
+  const {list,maxTop,reader,dispose} = virtualHistory(virtualTurns(4));
   try {
-    const list = env.document.querySelector('.ds-virtual-list');
-    const items = list.firstElementChild;
-    let position = 900;
-    const render = () => {
-      const turn = Math.min(3,Math.floor(position / 300)) + 1;
-      items.innerHTML = `<div data-virtual-list-item-key="${turn * 2 - 1}"><div>question ${turn}</div><button>复制</button></div>`
-        + `<div data-virtual-list-item-key="${turn * 2}"><div class="ds-message"><div class="ds-markdown ds-assistant-message-main-content"><p>answer ${turn}</p></div></div><div role="button">重新生成</div></div>`;
-    };
-    Object.defineProperties(list,{clientHeight:{get:() => 300},scrollHeight:{get:() => 1200},scrollTop:{get:() => position,set:value => {position = Math.max(0,Math.min(900,value)); render();}}});
-    render();
-    const script = `(${inspectDeepSeekReplyBuilder.toString()})().history()`;
-    const result = await new Function('document',`return ${script}`)(env.document);
+    const result = await reader.history();
     assert.deepEqual(result.messages.map(m => [m.role,m.text]),[1,2,3,4].flatMap(n => [['user',`question ${n}`],['assistant',`answer ${n}`]]));
     assert.ok(result.messages.every(m => !Object.hasOwn(m,'webKey')));
     assert.equal(result.text,'answer 4');
-    assert.equal(list.scrollTop,900,'the webpage ends at the latest answer for follow-up sends');
+    assert.equal(list.scrollTop,maxTop,'the webpage ends at the latest answer for follow-up sends');
     assert.equal(list.style.scrollBehavior,'');
-  } finally {env.dispose();}
+  } finally {dispose();}
+});
+
+test('scrolling to the bottom waits for mounted rows to actually cover the bottom viewport', async () => {
+  const {list,maxTop,reader,dispose} = virtualHistory(virtualTurns(2,125),{delay:position => position > 0 ? 400 : 0});
+  try {
+    const result = await reader.history();
+    assert.equal(list.scrollTop,maxTop);
+    assert.deepEqual(result.messages.map(message => message.text),['question 1','answer 1','question 2','answer 2']);
+    assert.equal(result.text,'answer 2');
+  } finally {dispose();}
+});
+
+test('history locates and scans a virtual viewport containing only a tall user question', async () => {
+  const rows = virtualTurns(1);
+  rows[0].height = 680;
+  const {reader,dispose} = virtualHistory(rows,{initialTop:0});
+  try {
+    const initial = reader.conversation();
+    assert.equal(initial.virtual,true);
+    assert.deepEqual(initial.messages.map(message => message.role),['user']);
+    const result = await reader.history();
+    assert.deepEqual(result.messages.map(message => message.text),['question 1','answer 1']);
+  } finally {dispose();}
+});
+
+test('sending from an earlier position waits for the latest mounted reply for its baseline', async () => {
+  const {list,maxTop,reader,dispose} = virtualHistory(virtualTurns(2,125),{initialTop:0,delay:() => 300});
+  try {
+    assert.equal(reader.reply().text,'answer 1');
+    const baseline = await reader.sendBaseline('https://typora.local/',location => location.href);
+    assert.equal(baseline.key,'row:a2');
+    assert.equal(baseline.text,'answer 2');
+    assert.equal(baseline.atEnd,true);
+    assert.equal(list.scrollTop,maxTop);
+  } finally {dispose();}
 });
 
 test('keyed user questions that match toolbar labels or timestamps are preserved', () => {
