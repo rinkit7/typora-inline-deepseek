@@ -4,6 +4,117 @@ import crypto from "node:crypto";
 import {browserEnvironment} from "./helpers/browser-env.js";
 import {TyporaHost} from "../src/typora-host.js";
 
+test("reading dock reserves editor space, switches at half width and collapses the composer after sending", async () => {
+  const env = browserEnvironment('<body><div class="typ-workspace-root"></div><content class="typ-workspace-binding"><div id="write" contenteditable="true">Document</div><div id="typora-source" style="position:fixed"></div><ul id="context-menu" style="position:fixed;z-index:1000"></ul><ul id="block-style-menu" style="position:fixed;z-index:1000"></ul></content></body>');
+  let controller, preferences = {dockHeight:16}, sent = false;
+  try {
+    const {document,window} = env;
+    let viewportWidth = 1500;
+    Object.defineProperties(window,{
+      innerWidth:{get:() => viewportWidth,configurable:true},
+      outerWidth:{get:() => viewportWidth,configurable:true},
+      innerHeight:{value:960,configurable:true}
+    });
+    Object.defineProperty(window.screen,"availWidth",{value:2560});
+    let editorMeasurements = 0;
+    const editorRect = () => {
+      editorMeasurements++;
+      const sidebarWidth = parseFloat(document.body.style.getPropertyValue("--typ-sidedock-width")) || 0;
+      const right = viewportWidth - sidebarWidth;
+      return {left:48,top:85,right,bottom:935,width:right - 48,height:850};
+    };
+    for (const element of document.querySelectorAll("content,.typ-workspace-root,#typora-source")) element.getBoundingClientRect = editorRect;
+    window.reqnode = name => name === "crypto" ? crypto : {
+      readFileSync:() => JSON.stringify(preferences),mkdirSync() {},
+      writeFileSync(file,value) {if (file.endsWith("preferences.json")) preferences = JSON.parse(value);}
+    };
+    const create = document.createElement.bind(document);
+    document.createElement = (tag,...args) => {
+      const element = create(tag,...args);
+      if (tag === "webview") {
+        element.getURL = () => element.getAttribute("src");
+        element.executeJavaScript = async script => {
+          if (script.includes("inspectWebPageReady")) return true;
+          if (script.includes("function sendWebQuestion")) {sent = true; return {ok:true,url:element.getURL()};}
+          if (sent && script.includes("().followReply(")) {
+            return {url:element.getURL(),key:"row:answer",count:1,text:"DeepSeek 回答已同步。",latest:true,atEnd:false};
+          }
+          return {url:element.getURL(),count:0,text:"",generating:false,atEnd:true};
+        };
+      }
+      return element;
+    };
+    const {createWorkspaceChat} = await import("../src/workspace-controller.js");
+    const {fireEvent,findByRole,findByText,waitFor} = await import("@testing-library/dom");
+    controller = createWorkspaceChat({editorSelection:new TyporaHost(window,document),getCurrentDocumentIdentity:() => ({key:"doc",label:"a.md"}),app:{workspace:{on:() => () => {}}}});
+    fireEvent.click(document.getElementById("deepseek-workspace-launch"));
+    const node = document.getElementById("deepseek-workspace");
+    node.getBoundingClientRect = () => {
+      const left = parseFloat(node.style.left), top = parseFloat(node.style.top);
+      const width = parseFloat(node.style.width), height = parseFloat(node.style.height);
+      return {left,top,width,height,right:left + width,bottom:top + height};
+    };
+    const mount = node.lastElementChild.shadowRoot.lastElementChild;
+    const limits = property => [...document.styleSheets[0].cssRules].slice(1).map(rule => rule.style.getPropertyValue(property));
+    await waitFor(() => assert.ok(mount.querySelector(".ds-docked-right")));
+    assert.equal(node.style.left,"1060px");
+    assert.deepEqual(limits("max-width"),["1012px","","1012px"]);
+    assert.equal(mount.querySelectorAll('[role="separator"]').length,1);
+
+    const measurementsBeforeReflow = editorMeasurements;
+    document.body.style.setProperty("--typ-editor-width","1012px");
+    document.body.style.setProperty("--typ-editor-height","850px");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(editorMeasurements,measurementsBeforeReflow,"the framework reporting the reserved size must not measure the dock again");
+    document.body.style.setProperty("--typ-sidedock-width","80px");
+    await waitFor(() => assert.equal(node.style.left,"980px"));
+    document.body.style.removeProperty("--typ-sidedock-width");
+
+    viewportWidth = 1280;
+    window.dispatchEvent(new window.Event("resize"));
+    await waitFor(() => assert.ok(mount.querySelector(".ds-docked-bottom")));
+    assert.equal(node.style.width,"1232px");
+    assert.equal(node.style.top,"544px");
+    for (const menu of document.querySelectorAll("#context-menu,#block-style-menu")) {
+      const layer = Number(window.getComputedStyle(menu).zIndex);
+      assert.ok(Number(node.style.zIndex) < layer,"the Typora menu can extend over the dock");
+      assert.ok(Number(document.getElementById("deepseek-workspace-launch").style.zIndex) < layer);
+    }
+    assert.deepEqual(limits("max-height"),["459px","","459px"]);
+    assert.deepEqual(limits("max-width"),["","",""]);
+    const webpage = node.querySelector("webview");
+    assert.equal(webpage.parentElement.style.overflow,"hidden");
+    assert.equal(webpage.style.height,"100%");
+    assert.equal(webpage.style.minHeight,"560px");
+    fireEvent.click(await findByRole(mount,"button",{name:"网页",exact:true}));
+    await findByRole(mount,"generic",{name:"DeepSeek 网页区域"});
+    assert.equal(webpage.style.height,"calc(100% - 94px)");
+    assert.equal(webpage.style.minHeight,"0px");
+    fireEvent.click(await findByRole(mount,"button",{name:"对话",exact:true}));
+    assert.equal(webpage.style.minHeight,"560px");
+    fireEvent.keyDown(await findByRole(mount,"separator",{name:"拖动上边框调整高度"}),{key:"ArrowUp"});
+    await waitFor(() => assert.equal(preferences.dockHeight,401));
+    assert.deepEqual(limits("max-height"),["449px","","449px"]);
+
+    const input = await findByRole(mount,"textbox",{name:"输入问题"});
+    fireEvent.change(input,{target:{value:"Explain this"}});
+    fireEvent.click(await findByRole(mount,"button",{name:"发送问题"}));
+    const followUp = await findByRole(mount,"button",{name:"继续提问"});
+    await findByText(mount,"DeepSeek 回答已同步。",{}, {timeout:2000});
+    assert.equal(mount.querySelector('textarea[aria-label="输入问题"]'),null);
+    fireEvent.click(followUp);
+    await findByRole(mount,"textbox",{name:"输入问题"});
+    viewportWidth = 1500;
+    window.dispatchEvent(new window.Event("resize"));
+    await waitFor(() => assert.ok(mount.querySelector(".ds-docked-right")));
+    assert.deepEqual(limits("max-height"),["","",""]);
+    await findByText(mount,"DeepSeek 回答已同步。");
+    fireEvent.click(await findByRole(mount,"button",{name:"关闭问答"}));
+    assert.equal(document.querySelector("[data-deepseek-dock-host]"),null);
+    assert.equal(document.styleSheets.length,0);
+  } finally {controller?.dispose(); env.dispose();}
+});
+
 test("four edge handles resize live, anchor the opposite side and remember sizes across workspaces", async () => {
   const env = browserEnvironment();
   let controller, preferences = {};
@@ -61,8 +172,6 @@ test("four edge handles resize live, anchor the opposite side and remember sizes
     assert.equal(node.getBoundingClientRect().width,540);
     assert.notEqual(node.querySelector("webview").style.visibility,"hidden");
     assert.ok(!document.getElementById("deepseek-geometry-preview"));
-    fireEvent.click(mount.querySelector('input[type="checkbox"]'));
-    await waitFor(() => assert.ok(mount.querySelector(".ds-transparent")));
     pointer(right,"pointerdown",1262); pointer(right,"pointermove",500);
     await waitFor(() => assert.equal(node.getBoundingClientRect().width,300));
     assert.equal(node.getBoundingClientRect().left,722);
@@ -233,9 +342,6 @@ test("native menu, floating button and Ctrl+I attach new selections to the same 
     listener({menu}); window.getSelection().removeAllRanges(); item.click({preventDefault() {}});
     await findByText(mount,"First paragraph",{selector:"summary"});
     assert.equal(pages[0].isConnected,true);
-    const settings = mount.querySelector(".ds-settings"); settings.open = true;
-    fireEvent.click(mount.querySelector('input[type="checkbox"]'));
-    await waitFor(() => assert.ok(mount.querySelector(".ds-transparent")));
     const input = await findByRole(mount,"textbox",{name:"输入问题"});
     fireEvent.change(input,{target:{value:"keep custom question"}});
     select("second");

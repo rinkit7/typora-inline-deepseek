@@ -114,7 +114,7 @@ function HistoryPicker({actions,session,busy,onClose}) {
 function App({services}) {
   const {session,actions,appearance,detached,gestures} = services;
   const state = useSyncExternalStore(session.subscribe,session.getSnapshot,session.getSnapshot);
-  const [background,setBackground] = useState(() => appearance.loadReaderOpacity());
+  const [readingLayout,setReadingLayout] = useState(() => appearance.loadReadingLayout?.() ?? "auto");
   const {width,height} = useSyncExternalStore(gestures.subscribe,gestures.getSnapshot,gestures.getSnapshot);
   const [font,setFont] = useState(() => appearance.loadReaderFont());
   const [paused,setPaused] = useState(false), [opacity,setOpacity] = useState(() => appearance.loadOpacity());
@@ -187,12 +187,15 @@ function App({services}) {
     measure(); const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
     observer?.observe(webArea.current); return () => observer?.disconnect();
   },[state.view,state.error,editingQuickAsks,showingHistory,actions]);
-  const transparent = state.transparent && !detached;
+  const dock = !detached && state.dockPosition;
+  const edges = dock ? [dock === "right" ? "left" : "top"] : ["left","right","top","bottom"];
+  const collapsed = dock && state.composerCollapsed && !state.draft.trim() && !state.quote;
   return <Services.Provider value={services}><AssistantRuntimeProvider runtime={runtime}>
-    <section aria-label="DeepSeek 选区问答" className={`ds-shell ${transparent ? "ds-transparent" : ""} ${state.view === "web" ? "ds-web" : ""} ${detached ? "ds-detached" : ""}`} style={{"--card-alpha":`${background}%`,"--reader-font":`${font}px`}}>
-      {!detached && <>{["left","right","top","bottom"].map(edge => {
+    <section aria-label="DeepSeek 选区问答" className={`ds-shell ${dock ? `ds-docked ds-docked-${dock}` : ""} ${state.view === "web" ? "ds-web" : ""} ${detached ? "ds-detached" : ""}`} style={{"--reader-font":`${font}px`}}>
+      {!detached && <>{edges.map(edge => {
         const vertical = edge === "top" || edge === "bottom", label = `拖动${{left:"左",right:"右",top:"上",bottom:"下"}[edge]}边框调整${vertical ? "高度" : "宽度"}`;
-        return <div key={edge} className={`ds-resize-edge ds-resize-${edge}`} role="separator" aria-label={label} aria-orientation={vertical ? "horizontal" : "vertical"} aria-valuemin={vertical ? 320 : 300} aria-valuemax={vertical ? 12000 : 640} aria-valuenow={vertical ? height : width} tabIndex={0} title={label}/>;
+        const limits = dock && actions.getDockResizeRange?.();
+        return <div key={edge} className={`ds-resize-edge ds-resize-${edge}`} role="separator" aria-label={label} aria-orientation={vertical ? "horizontal" : "vertical"} aria-valuemin={limits?.min ?? (vertical ? 320 : 300)} aria-valuemax={limits?.max ?? (vertical ? 12000 : 640)} aria-valuenow={dock ? actions.getDockSize?.() : vertical ? height : width} tabIndex={0} title={label}/>;
       })}</>}
       <div className="ds-header">
         <div className="ds-brand"><span>✦</span><div><strong>DeepSeek</strong><small>选区问答</small></div></div>
@@ -202,14 +205,15 @@ function App({services}) {
             <button type="button" onClick={() => run(session,actions.transfer)}>{detached ? "移回文档" : "独立窗口"}</button>
             <button type="button" onClick={() => run(session,actions.reload)}>刷新 DeepSeek 网页</button>
             <button type="button" onClick={event => {setEditingQuickAsks(true); setShowingHistory(false); event.currentTarget.closest("details").removeAttribute("open");}}>快捷提问设置</button>
-            <label className="ds-check"><input type="checkbox" checked={state.transparent} disabled={detached} onChange={event => session.setTransparent(event.target.checked)}/>透明共读</label>
-            {detached && <p>透明共读在原文档内使用</p>}
+            {!detached && actions.readingLayout && <label>阅读布局<select value={readingLayout} onChange={event => {
+              const value = event.target.value;
+              try {actions.readingLayout(value); setReadingLayout(value);} catch (error) {session.report(error);}
+            }}><option value="auto">自动停靠</option><option value="bottom">停靠底部</option><option value="floating">浮动窗口</option></select></label>}
             <label className="ds-check"><input type="checkbox" checked={launcherVisible} onChange={event => {
               const value = event.target.checked;
               if (appearance.saveLauncherVisible?.(value) !== true) {session.report(Error("悬浮按钮设置保存失败，请重试。")); return;}
               setLauncherVisible(value); actions.launcherVisible?.(value);
             }}/>显示悬浮按钮</label>
-            <label>回答底色 <output>{background}%</output><input aria-label="回答底色" type="range" min="20" max="100" step="5" value={background} onChange={event => {const value = +event.target.value; setBackground(value); appearance.saveReaderOpacity(value);}}/></label>
             <label>阅读字号 <output>{font}px</output><input aria-label="阅读字号" type="range" min="14" max="22" value={font} onChange={event => {const value = +event.target.value; setFont(value); appearance.saveReaderFont(value);}}/><span className="ds-font-preview" style={{fontSize:`${font}px`}}>文字预览 Aa 中文</span></label>
             {detached && <label>小窗不透明度 <output>{opacity}%</output><input aria-label="小窗不透明度" type="range" min="40" max="100" step="5" value={opacity} onChange={event => {const value = +event.target.value; setOpacity(value); appearance.saveOpacity(value);}}/></label>}
             {detached && <label className="ds-check"><input type="checkbox" checked={pinned} onChange={event => {const value = event.target.checked; setPinned(value); appearance.savePinned?.(value); actions.pin?.(value);}}/>小窗置顶</label>}
@@ -222,8 +226,8 @@ function App({services}) {
           {!state.messages.length && <div className="ds-empty"><div>✦</div><h2>从一段文字开始</h2><p>在正文选中文字，右键选择<br/>“DeepSeek 问答”，引用会出现在输入框上方。</p><span>首次使用请在“网页”中登录 DeepSeek</span></div>}
           <ThreadPrimitive.Messages components={{UserMessage:Message,AssistantMessage:Message}}/>
         </ThreadPrimitive.Viewport>
-        <div className="ds-thread-tools"><button type="button" onClick={() => {const value = !paused; setPaused(value); actions.pause(value);}}>{paused ? "继续同步" : "暂停同步"}</button><ThreadPrimitive.ScrollToBottom behavior="smooth">↓ 最新回答</ThreadPrimitive.ScrollToBottom></div>
-        <Composer state={state} quickAsks={quickAsks} onEditQuickAsks={() => setEditingQuickAsks(true)}/>
+        <div className="ds-thread-tools">{collapsed && <button type="button" className="ds-continue" onClick={() => {session.expandComposer(); actions.focusComposer?.();}}>继续提问</button>}<button type="button" onClick={() => {const value = !paused; setPaused(value); actions.pause(value);}}>{paused ? "继续同步" : "暂停同步"}</button><ThreadPrimitive.ScrollToBottom behavior="smooth">↓ 最新回答</ThreadPrimitive.ScrollToBottom></div>
+        {!collapsed && <Composer state={state} quickAsks={quickAsks} onEditQuickAsks={() => setEditingQuickAsks(true)}/>}
       </ThreadPrimitive.Root> : <div className="ds-web-placeholder" ref={webArea} aria-label="DeepSeek 网页区域"/>}
       <div className="ds-footer">{paused ? "同步已暂停" : state.notice || (state.quote ? "已附加选区，可直接发送" : "选中正文 · 右键提问 · 保留会话")}</div>
     </section>

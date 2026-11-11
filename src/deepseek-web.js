@@ -65,42 +65,65 @@ export function inspectDeepSeekReplyBuilder() {
   }
   const visibleItems = list => list?.querySelector(".ds-virtual-list-visible-items");
   const rowKey = "data-virtual-list-item-key";
+  const keyedRows = items => [...(items?.children || [])].filter(row => row.hasAttribute(rowKey));
+  const cssPx = (node,property) => parseFloat(document.defaultView.getComputedStyle(node)[property]) || 0;
   const waitForRender = () => new Promise(resolve => setTimeout(resolve,80));
-  function findMessageList() {
+  function answerBlocks(row) {
+    const answers = row.querySelectorAll(".ds-assistant-message-main-content");
+    return answers.length ? answers : row.querySelectorAll(".ds-markdown");
+  }
+  function findMessageList(allowEmpty = false) {
     const answer = document.querySelector(".ds-assistant-message-main-content,.ds-markdown");
     if (answer) {
       const list = answer.closest(".ds-virtual-list");
-      return visibleItems(list) ? list : null;
+      if (visibleItems(list)) return list;
+      if (!allowEmpty) return null;
     }
-    // A virtual viewport can contain only a question. Use the keyed message
-    // list itself when there is no assistant node to locate it by.
+    // The viewport can contain only a question, or be past the message track.
     const lists = [...document.querySelectorAll(".ds-virtual-list")].filter(list => {
       const items = visibleItems(list);
-      return items?.querySelector("[" + rowKey + "]") && !list.closest('aside,nav,[role="navigation"]') && !items.querySelector('a[href*="/a/chat/s/"]');
+      if (!items || list.closest('aside,nav,[role="navigation"]') || items.querySelector('a[href*="/a/chat/s/"]')) return false;
+      return keyedRows(items).length || allowEmpty && messageWindow(list,items)?.hasTrack;
     });
     return lists.length === 1 ? lists[0] : null;
   }
-  function mountedWindow(list) {
-    const items = visibleItems(list);
-    const rows = [...(items?.children || [])].filter(row => row.hasAttribute(rowKey));
-    const first = rows[0], last = rows.at(-1), height = list.clientHeight;
-    if (!first || !height) return null;
-    const top = list.scrollTop, bottom = Math.max(0,list.scrollHeight - height);
+  function messageWindow(list,items = visibleItems(list)) {
+    if (!items) return null;
+    const height = list.clientHeight;
+    if (!height) return null;
+    const top = list.scrollTop, extent = Math.max(height,list.scrollHeight);
     const origin = list.getBoundingClientRect().top + list.clientTop - top;
+    // The full virtual track excludes scrollable space before or after the messages.
+    const track = items.closest(".ds-virtual-list-items");
+    const rect = list.contains(track) ? track.getBoundingClientRect() : null;
+    const start = rect ? Math.max(0,rect.top - origin) : 0;
+    const end = rect ? Math.min(extent,rect.bottom - origin) : 0;
+    const hasTrack = end > start;
+    const from = hasTrack ? start : 0, to = hasTrack ? end : extent;
+    const bottom = Math.min(extent - height,Math.max(0,Math.ceil(to - height)));
+    const firstTop = Math.min(bottom,Math.floor(from));
+    return {items,height,top,origin,from,to,bottom,firstTop,hasTrack};
+  }
+  function mountedWindow(list,bounds,rows = keyedRows(bounds?.items)) {
+    if (!bounds || !rows.length) return null;
+    const {items,height,top,origin,from,to,bottom,firstTop,hasTrack} = bounds;
+    const first = rows[0], last = rows.at(-1);
     const start = first.getBoundingClientRect().top - origin;
     const end = last.getBoundingClientRect().bottom - origin;
     if (!(end > start)) return null;
-    const style = node => document.defaultView.getComputedStyle(node);
-    const px = value => parseFloat(value) || 0;
-    const before = px(style(first).marginTop) + (top <= 2 ? px(style(list).paddingTop) + px(style(items).paddingTop) : 0);
-    const after = px(style(last).marginBottom) + (top >= bottom - 2 ? px(style(list).paddingBottom) + px(style(items).paddingBottom) : 0);
-    // scrollTop changes before the virtual list has rendered that position.
-    // Measure the mounted rows in scroll coordinates, including overscan.
-    if (bottom > 2 && (start - before > top + 2 || end + after < top + height - 2)) return null;
-    return {top,bottom,height,start,end};
+    const before = cssPx(first,"marginTop") + (top <= firstTop + 2 ? cssPx(items,"paddingTop") + (hasTrack ? 0 : cssPx(list,"paddingTop")) : 0);
+    const after = cssPx(last,"marginBottom") + (top >= bottom - 2 ? cssPx(items,"paddingBottom") + (hasTrack ? 0 : cssPx(list,"paddingBottom")) : 0);
+    // scrollTop can change before the virtual list has rendered that position.
+    // Require the mounted rows to cover the visible part of the message track.
+    const visibleStart = Math.max(top,from), visibleEnd = Math.min(top + height,to);
+    if (visibleEnd <= visibleStart) return null;
+    if ((hasTrack || bottom > 2) && (start - before > visibleStart + 2 || end + after < visibleEnd - 2)) return null;
+    return {top,bottom,height,end};
   }
-  function reply(list = findMessageList()) {
-    const nodes = [...(list || document).querySelectorAll(".ds-markdown")], last = nodes.at(-1);
+  function reply(list = findMessageList(),bounds = messageWindow(list)) {
+    const rows = keyedRows(bounds?.items || visibleItems(list));
+    const nodes = list ? rows.flatMap(row => [...answerBlocks(row)]) : [...document.querySelectorAll(".ds-markdown")];
+    const last = nodes.at(-1);
     const textarea = document.querySelector("textarea");
     let scope = textarea?.parentElement, generating = !!textarea?.disabled;
     for (let i = 0; scope && i < 6 && scope !== document.body; i++,scope = scope.parentElement) {
@@ -114,9 +137,27 @@ export function inspectDeepSeekReplyBuilder() {
     }
     const row = last?.closest("[" + rowKey + "]");
     const key = row ? "row:" + row.getAttribute(rowKey) : last ? "block:" + nodes.length : null;
-    const viewport = list && mountedWindow(list);
+    const viewport = mountedWindow(list,bounds,rows);
     const atEnd = !list || !!viewport && viewport.top >= viewport.bottom - 2;
-    return {count:nodes.length,key,atEnd,text:last ? readMarkdown(last) : "",generating,loggedIn:!!textarea,url:document.location.href};
+    // A tall final answer can already be mounted while the page is anchored
+    // at the question. Its row reaches the end of the full message track.
+    const latest = bounds?.hasTrack
+      ? !!row && row === rows.at(-1) && (atEnd ||
+        row.getBoundingClientRect().bottom - bounds.origin + cssPx(row,"marginBottom") + cssPx(bounds.items,"paddingBottom") >= bounds.to - 2)
+      : atEnd;
+    return {count:nodes.length,key,atEnd,latest,text:last ? readMarkdown(last) : "",generating,loggedIn:!!textarea,url:document.location.href};
+  }
+  function followReply(expectedURL,conversationAt) {
+    if (conversationAt(document.location) !== expectedURL) return {url:document.location.href};
+    const list = findMessageList(true);
+    const bounds = messageWindow(list);
+    const result = reply(list,bounds);
+    // If the reply is offscreen, bring it into the background viewport.
+    // The next poll can verify that the virtual list has mounted those rows.
+    if (bounds && result.loggedIn && !result.atEnd && !result.latest && Math.abs(bounds.top - bounds.bottom) > 2) {
+      list.scrollTo({top:bounds.bottom,behavior:"instant"});
+    }
+    return result;
   }
   async function sendBaseline(expectedURL,conversationAt) {
     const matches = () => conversationAt(document.location) === expectedURL;
@@ -129,8 +170,8 @@ export function inspectDeepSeekReplyBuilder() {
     list.style.scrollBehavior = "auto";
     try {
       while (Date.now() < deadline) {
-        const bottom = Math.max(0,list.scrollHeight - list.clientHeight);
-        if (list.scrollTop < bottom - 2) list.scrollTop = bottom;
+        const bottom = messageWindow(list)?.bottom;
+        if (bottom != null && Math.abs(list.scrollTop - bottom) > 2) list.scrollTop = bottom;
         await waitForRender();
         if (!list.isConnected || !matches()) throw Error("DeepSeek 网页会话已切换，请从「历史」重新选择。");
         result = reply(list);
@@ -196,11 +237,9 @@ export function inspectDeepSeekReplyBuilder() {
     if (virtualItems) {
       // Offscreen messages are unmounted. Read keyed message rows, never the
       // page title, composer or auxiliary rendering trees.
-      for (const row of virtualItems.children) {
+      for (const row of keyedRows(virtualItems)) {
         const webKey = row.getAttribute(rowKey);
-        if (webKey == null) continue;
-        const answers = [...row.querySelectorAll('.ds-assistant-message-main-content')];
-        const blocks = answers.length ? answers : [...row.querySelectorAll('.ds-markdown')];
+        const blocks = answerBlocks(row);
         const start = messages.length;
         if (blocks.length) for (const block of blocks) pushAssistant(block);
         else pushUser(row,true);
@@ -240,7 +279,7 @@ export function inspectDeepSeekReplyBuilder() {
     let truncated = false, completed = false;
     list.style.scrollBehavior = 'auto';
     try {
-      let requestedTop = 0;
+      let requestedTop = messageWindow(list)?.firstTop ?? 0;
       while (Date.now() < deadline) {
         list.scrollTop = requestedTop;
         let snapshot, viewport, signature = '', stable = 0;
@@ -248,11 +287,19 @@ export function inspectDeepSeekReplyBuilder() {
         while (Date.now() < windowDeadline) {
           await waitForRender();
           if (!list.isConnected || document.location.href !== sourceURL) throw Error('读取期间网页会话已改变，请重新选择。');
-          const mounted = mountedWindow(list);
-          if (!mounted || Math.abs(mounted.top - Math.min(requestedTop,mounted.bottom)) > 2) {signature = ''; stable = 0; continue;}
+          const bounds = messageWindow(list);
+          if (bounds) {
+            const target = Math.max(bounds.firstTop,Math.min(requestedTop,bounds.bottom));
+            if (Math.abs(bounds.top - target) > 2) {
+              list.scrollTop = target;
+              signature = ''; stable = 0; continue;
+            }
+          }
+          const mounted = mountedWindow(list,bounds);
+          if (!mounted) {signature = ''; stable = 0; continue;}
           const candidate = conversation(list);
           if (!candidate.loggedIn || candidate.generating || !candidate.messages.length) {signature = ''; stable = 0; continue;}
-          const next = JSON.stringify([mounted,candidate.messages]);
+          const next = JSON.stringify(candidate.messages);
           stable = next === signature ? stable + 1 : 1; signature = next;
           if (stable >= 3) {snapshot = candidate; viewport = mounted; break;}
         }
@@ -276,7 +323,7 @@ export function inspectDeepSeekReplyBuilder() {
       list.style.scrollBehavior = originalBehavior;
     }
   }
-  return {reply,sendBaseline,conversation,history};
+  return {reply,followReply,sendBaseline,conversation,history};
 }
 
 // In-process wrapper; the webview path serializes the builder instead.
@@ -286,12 +333,15 @@ export function inspectDeepSeekReply() {
 
 export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900,historyPause = ms => new Promise(resolve => setTimeout(resolve,ms)),historyAttempts = 40}) {
   let disposed = false, active = false, polling = false, paused = false, suspended = false, switching = false, historyFailed = false, epoch = 0;
+  let followingURL = null;
   const listeners = new Set();
   const lifecycle = createWebviewLifecycle(webview,state => onStatus(state));
-  const replyScript = `(${inspectDeepSeekReplyBuilder.toString()})().reply()`;
-  const conversationScript = `(${inspectDeepSeekReplyBuilder.toString()})().conversation()`;
-  const historyScript = `(${inspectDeepSeekReplyBuilder.toString()})().history()`;
-  const read = () => executeWebScript(webview,replyScript,false,2200);
+  const reader = `(${inspectDeepSeekReplyBuilder.toString()})()`;
+  const replyScript = `${reader}.reply()`;
+  const conversationScript = `${reader}.conversation()`;
+  const historyScript = `${reader}.history()`;
+  const read = url => executeWebScript(webview,url === followingURL
+    ? `${reader}.followReply(${JSON.stringify(url)},(${conversationAt.toString()}))` : replyScript,false,2200);
   const pageURL = () => {try {return webview.getURL();} catch (_) {return "";}};
   const currentURL = () => getConversationURL(pageURL());
   const pageChanged = () => Error("DeepSeek 网页会话已切换，请从「历史」重新选择后再发送。");
@@ -303,7 +353,7 @@ export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900,hi
     polling = true;
     const started = epoch;
     try {
-      const reply = url ? await read() : {url:null};
+      const reply = url ? await read(url) : {url:null};
       if (disposed || !active || paused || suspended || switching || epoch !== started || currentURL() !== url) return;
       if (url && getConversationURL(reply?.url) !== url) return;
       for (const listener of listeners) listener({...reply,url});
@@ -313,7 +363,7 @@ export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900,hi
   const timer = setInterval(poll,interval);
   return {
     subscribe(listener) {listeners.add(listener); return () => listeners.delete(listener);},
-    setActive(value) {active = !!value; if (active) void poll();},
+    setActive(value,follow = null) {active = !!value; followingURL = follow; if (active) void poll();},
     setPaused(value) {paused = !!value; if (!paused) void poll();},
     setSuspended(value) {suspended = !!value; if (!suspended) void poll();},
     async send(prompt,conversationURL) {
@@ -330,7 +380,7 @@ export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900,hi
         }
         throw pageChanged();
       }
-      const baselineScript = `(${inspectDeepSeekReplyBuilder.toString()})().sendBaseline(${JSON.stringify(target)},(${conversationAt.toString()}))`;
+      const baselineScript = `${reader}.sendBaseline(${JSON.stringify(target)},(${conversationAt.toString()}))`;
       const baseline = await executeWebScript(webview,baselineScript,false,3500);
       if (disposed || started !== epoch || currentURL() !== target || getConversationURL(baseline?.url) !== target) throw pageChanged();
       if (baseline.generating) throw Error("DeepSeek 还在回答上一条问题，请等回答结束后发送。");
@@ -388,7 +438,14 @@ export function createDeepSeekWeb({webview,onStatus = () => {},interval = 900,hi
           }
         }
         throw Error("历史会话尚未加载完成，请在“网页”中确认后重试。");
-      } catch (error) {historyFailed = true; if (!disposed && previous !== url) webview.setAttribute("src",previous || DEEPSEEK_HOME); throw error;}
+      } catch (error) {
+        historyFailed = true;
+        if (!disposed && previous !== url) webview.setAttribute("src",previous || DEEPSEEK_HOME);
+        const message = error?.message;
+        const prefix = /^Error invoking remote method ['"]GUEST_VIEW_MANAGER_CALL['"]:\s*(?:Error:\s*)?/;
+        if (prefix.test(message)) throw Error(message.replace(prefix,""),{cause:error});
+        throw error;
+      }
       finally {switching = false;}
     },
     navigate(value) {

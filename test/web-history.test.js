@@ -111,12 +111,12 @@ test("a full history scan failure propagates without restarting the scan or allo
   let url = original, scans = 0;
   const page = {addEventListener() {},removeEventListener() {},getURL:() => url,setAttribute:(key,value) => {url = value;},executeJavaScript:async script => {
     if (script.includes('inspectWebPageReady')) return true;
-    if (script.includes('.history()')) {scans++; throw Error('会话较长，尚未完整读取');}
+    if (script.includes('.history()')) {scans++; throw Error("Error invoking remote method 'GUEST_VIEW_MANAGER_CALL': Error: 会话较长，尚未完整读取");}
     return {url,virtual:true,loggedIn:true,generating:false,count:1,text:'partial',messages:[{role:'assistant',text:'partial',webKey:'a'}]};
   }};
   const provider = createDeepSeekWeb({webview:page,interval:60000,historyPause:async () => {}});
   try {
-    await assert.rejects(provider.openHistory('/a/chat/s/new'),/尚未完整读取/);
+    await assert.rejects(provider.openHistory('/a/chat/s/new'),{message:'会话较长，尚未完整读取'});
     assert.equal(scans,1);
     assert.equal(url,original);
     await assert.rejects(provider.send('do not send'),/重新选择/);
@@ -140,7 +140,7 @@ test("history does not accept a completed scan from another webpage conversation
 
 test("history picker uses webpage records, preserves the draft and quote, and writes no local history", async () => {
   const env = browserEnvironment(), writes = [];
-  let controller, url = 'https://chat.deepseek.com/', currentText = 'old answer';
+  let controller, historyViewport, url = 'https://chat.deepseek.com/', currentText = 'old answer';
   try {
     const {document,window} = env;
     window.reqnode = name => name === 'crypto' ? crypto : {readFileSync() {throw Error('no local state');},mkdirSync() {},writeFileSync:(file,value) => writes.push([file,value])};
@@ -152,7 +152,10 @@ test("history picker uses webpage records, preserves the draft and quote, and wr
         node.executeJavaScript = async script => {
           if (script.includes('inspectWebPageReady')) return true;
           if (script.includes('inspectWebHistory')) return {loggedIn:true,items:[{id:'saved',title:'缓存知识笔记',dateLabel:'2026-11-06',url:'https://chat.deepseek.com/a/chat/s/saved'}]};
-          if (script.includes('.conversation()')) return {url,loggedIn:true,generating:false,count:1,text:currentText,messages:[{role:'user',text:'较早的提问'},{role:'assistant',text:currentText}]};
+          if (script.includes('.conversation()')) {
+            historyViewport = {minHeight:node.style.minHeight,pointerEvents:node.style.pointerEvents};
+            return {url,loggedIn:true,generating:false,count:1,text:currentText,messages:[{role:'user',text:'较早的提问'},{role:'assistant',text:currentText}]};
+          }
           if (script.includes('inspectDeepSeekReply')) return {url,loggedIn:true,count:1,text:currentText,generating:false};
           throw Error('history must not send');
         };
@@ -186,11 +189,14 @@ test("history picker uses webpage records, preserves the draft and quote, and wr
     assert.equal(mount.querySelector('.ds-history'),null);
     fireEvent.click(await findByRole(mount,'button',{name:'对话',exact:true}));
     assert.equal((await findByRole(mount,'textbox',{name:'输入问题'})).value,'尚未发送的草稿');
+    fireEvent.click(await findByRole(mount,'button',{name:'网页',exact:true}));
+    await findByRole(mount,'generic',{name:'DeepSeek 网页区域'});
     await showHistory();
     fireEvent.click(await findByRole(mount,'button',{name:/缓存知识笔记/}));
     // A restored history question must render, not only the newest answer.
     await findByText(mount,'较早的提问');
     await findByText(mount,'从网页历史读取的回答');
+    assert.deepEqual(historyViewport,{minHeight:'560px',pointerEvents:'none'});
     assert.equal((await findByRole(mount,'textbox',{name:'输入问题'})).value,'尚未发送的草稿');
     assert.equal((await findByText(mount,'保留的引用',{selector:'summary'})).textContent,'保留的引用');
     await waitFor(() => assert.equal(url,'https://chat.deepseek.com/a/chat/s/saved'));

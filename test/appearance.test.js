@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {createAppearanceStore,normalizeDetachedGeometry,normalizeOpacity,normalizeReaderOpacity,normalizeReaderWidth,normalizeReaderHeight,normalizeReaderFont} from "../src/appearance.js";
+import {createAppearanceStore,normalizeDetachedGeometry,normalizeOpacity,normalizeReaderWidth,normalizeReaderHeight,normalizeReaderFont} from "../src/appearance.js";
 import {DETACHED_WINDOW_TITLE,setNativeOpacity} from "../src/detached-session.js";
 
 test("opacity defaults and limits keep the window usable with malformed preferences", () => {
@@ -41,13 +41,14 @@ test("native opacity targets only the exact helper window and rejects invalid re
   assert.equal(calls.length,1);
 });
 
-test("reader background and width persist independently of whole-window opacity", () => {
-  let data = '{}';
+test("reading layout and dock sizes persist independently of floating size and whole-window opacity", () => {
+  let data = '{"readerOpacity":30}';
   const store = createAppearanceStore({reqnode:() => ({mkdirSync() {},readFileSync:() => data,writeFileSync:(file,value) => {data = value;}})});
-  assert.equal(store.loadReaderOpacity(),80); assert.equal(store.loadReaderWidth(),440);
-  store.saveOpacity(65); store.saveReaderOpacity(30); store.saveReaderWidth(320);
-  assert.equal(store.loadOpacity(),65); assert.equal(store.loadReaderOpacity(),30); assert.equal(store.loadReaderWidth(),320);
-  assert.equal(normalizeReaderOpacity(0),20); assert.equal(normalizeReaderOpacity("bad"),80);
+  assert.equal(store.loadReadingLayout(),"auto"); assert.equal(store.loadReaderWidth(),440);
+  store.saveOpacity(65); store.saveReadingLayout("bottom"); store.saveReaderWidth(320);
+  store.saveDockSize("top",260); store.saveDockSize("left",360);
+  assert.equal(store.loadOpacity(),65); assert.equal(store.loadReadingLayout(),"bottom"); assert.equal(store.loadReaderWidth(),320);
+  assert.equal(store.loadDockHeight(),260); assert.equal(store.loadDockWidth(),360);
   assert.equal(normalizeReaderWidth(0),300); assert.equal(normalizeReaderWidth(1000),640); assert.equal(normalizeReaderWidth(null),440);
   assert.equal(store.loadReaderFont(),16); store.saveReaderFont(19); assert.equal(store.loadReaderFont(),19);
   assert.equal(normalizeReaderFont(2),14); assert.equal(normalizeReaderFont(50),22); assert.equal(normalizeReaderFont("bad"),16);

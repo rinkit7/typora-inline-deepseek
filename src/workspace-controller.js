@@ -7,6 +7,11 @@ import {registerDeepSeekMenu,canInsertAtSnapshot} from "./web-provider.js";
 import {createAppearanceStore} from "./appearance.js";
 import {writeDiagnostic} from "./runtime-paths.js";
 import {showToast} from "./typora-host.js";
+import {createReadingDock} from "./reading-dock.js";
+
+const backgroundWebMinHeight = "560px";
+// Typora's context menus and submenus use z-index 1000.
+const workspaceLayer = 900;
 
 export function createWorkspaceChat(plugin,options = {}) {
   const view = document, runtime = window, host = plugin.editorSelection;
@@ -14,10 +19,13 @@ export function createWorkspaceChat(plugin,options = {}) {
   const targets = new Map();
   let disposed = false, transferring = false, openingHistory = false, pressedTarget = null;
   const appearance = createAppearanceStore(runtime);
+  let readingLayout = appearance.loadReadingLayout();
+  let dockWidth = appearance.loadDockWidth(), dockHeight = appearance.loadDockHeight(), dockSize = null;
   let geometry = {left:null,top:48,width:460,height:appearance.loadReaderHeight()}, ui, interaction = null;
   const node = view.createElement("div");
+  const dock = createReadingDock(view,runtime);
   node.id = "deepseek-workspace";
-  node.style.cssText = "position:fixed;right:18px;top:48px;width:min(460px,calc(100vw - 36px));height:calc(100vh - 90px);z-index:999990;pointer-events:none;isolation:isolate;";
+  node.style.cssText = `position:fixed;right:18px;top:48px;width:min(460px,calc(100vw - 36px));height:calc(100vh - 90px);z-index:${workspaceLayer};pointer-events:none;isolation:isolate;`;
   // The detached window's Typora chrome (tab strip and menu bar) is removed
   // by the session, so the chat fills the whole client area under the OS bar.
   if (detached) {node.style.cssText = "position:fixed;inset:0;width:100%;height:100%;z-index:999990;pointer-events:none;isolation:isolate;";}
@@ -25,6 +33,14 @@ export function createWorkspaceChat(plugin,options = {}) {
   const setStyle = (key,value) => {if (node.style[key] !== value) node.style[key] = value;};
   function applyGeometry() {
     if (detached) {node.style.setProperty("--workspace-height",`${innerHeight}px`); return;}
+    if (dock.position) {
+      const rect = dock.place(dock.position === "right" ? dockWidth : dockHeight);
+      dockSize = dock.position === "right" ? rect.width : rect.height;
+      for (const [key,value] of Object.entries(rect)) setStyle(key,`${value}px`);
+      setStyle("right","auto");
+      node.style.setProperty("--workspace-height",`${rect.height}px`);
+      return;
+    }
     const width = Math.max(300,Math.min(640,Number(geometry.width) || 440));
     // Moving the card changes its position, never its height. Only shrinking
     // the Typora viewport may reduce the rendered size to keep it reachable.
@@ -41,12 +57,18 @@ export function createWorkspaceChat(plugin,options = {}) {
   }
   applyGeometry();
   function startDrag(rect) {
-    if (detached) return;
+    if (detached || dock.position) return;
     startInteraction(rect,"drag");
   }
   function startInteraction(rect,type,edge) {
     if (detached) return;
     if (interaction) endDrag();
+    if (dock.position) {
+      interaction = {type:"dock-resize"};
+      provider.setSuspended(true);
+      tracker?.setSuspended(true);
+      return;
+    }
     interaction = {type,origin:rect,left:rect.left,top:rect.top,width:type === "resize" && (edge === "left" || edge === "right") ? rect.width : geometry.width,height:geometry.height,maxLeft:Math.max(0,innerWidth - rect.width - 18),maxTop:Math.max(18,innerHeight - rect.height - 18)};
     if (type === "drag") node.style.willChange = "transform";
     // Render geometry on the real card each frame. Pause only background
@@ -64,22 +86,24 @@ export function createWorkspaceChat(plugin,options = {}) {
   }
   function endDrag() {
     if (!interaction) return;
-    geometry = {...geometry,left:interaction.left,top:interaction.top,width:interaction.width,height:interaction.height};
+    if (interaction.type !== "dock-resize") geometry = {...geometry,left:interaction.left,top:interaction.top,width:interaction.width,height:interaction.height};
     interaction = null;
     applyGeometry();
     node.style.transform = ""; node.style.willChange = "";
     provider.setSuspended(false);
     tracker?.setSuspended(false);
   }
-  const viewportResize = () => {endDrag(); applyGeometry();};
+  const viewportResize = () => {endDrag(); refreshDock();};
+  const webFrame = view.createElement("div");
+  webFrame.style.cssText = "position:absolute;inset:0;overflow:hidden;pointer-events:none";
   const webpage = view.createElement("webview");
   webpage.setAttribute("partition","persist:typora-inline-deepseek");
   webpage.setAttribute("webpreferences","contextIsolation=yes,sandbox=yes,nodeIntegration=no,webSecurity=yes,backgroundThrottling=no");
   webpage.setAttribute("src",DEEPSEEK_HOME);
-  webpage.style.cssText = "position:absolute;left:0;top:58px;width:100%;height:calc(100% - 94px);display:flex;opacity:.01;pointer-events:none;z-index:0;background:white;";
+  webpage.style.cssText = "position:absolute;left:0;top:0;width:100%;display:flex;opacity:.01;pointer-events:none;background:white;";
   const app = view.createElement("div");
   app.style.cssText = "position:absolute;inset:0;z-index:2;pointer-events:none";
-  node.appendChild(app); view.body.appendChild(node);
+  node.append(webFrame,app); view.body.appendChild(node);
   const shadow = app.attachShadow({mode:"open"});
   const mount = view.createElement("div"); mount.style.height = "100%"; shadow.appendChild(mount);
   const provider = createDeepSeekWeb({webview:webpage});
@@ -88,7 +112,25 @@ export function createWorkspaceChat(plugin,options = {}) {
     if (!detached && quote?.key && quote.key !== plugin.getCurrentDocumentIdentity().key) throw Error("文档已切换，请重新选择正文后提问。");
     return provider.send(prompt,url);
   }}});
+  let webBounds = {top:"58px",height:"calc(100% - 94px)"};
+  function syncWebView(state = session.getSnapshot()) {
+    // Keep enough room for DeepSeek's own header and composer in small docks.
+    // The frame clips the background guest to the visible workspace.
+    const show = state.view === "web" && !openingHistory;
+    webpage.style.top = show ? webBounds.top : "0px";
+    webpage.style.height = show ? webBounds.height : "100%";
+    webpage.style.minHeight = show ? "0px" : backgroundWebMinHeight;
+    webpage.style.opacity = show ? "1" : ".01";
+    webpage.style.pointerEvents = show && !state.sending ? "auto" : "none";
+    if (state.sending) webpage.blur();
+  }
   const tracker = detached ? null : createSelectionTracker({host,getIdentity:() => plugin.getCurrentDocumentIdentity(),view,runtime});
+  function refreshDock() {
+    if (!detached && session.getSnapshot().visible) dock.measure(readingLayout);
+    else dock.clear();
+    applyGeometry();
+    session.setDockPosition(dock.position);
+  }
   const targetId = () => runtime.reqnode("crypto").randomUUID();
   function diagnose(event) {
     writeDiagnostic(runtime,"runtime-status.json",{plugin:"DeepSeek 选区问答",version:"2.2.3",dragEngine:"native-capture-v1",geometryRendering:"live",layout:"assistant-ui",detached,event,quoted:!!session.getSnapshot().quote,messageCount:session.getSnapshot().messages.length,time:new Date().toISOString()});
@@ -119,12 +161,15 @@ export function createWorkspaceChat(plugin,options = {}) {
     }
     diagnose("selection-attached");
   }
-  function open(target) {if (target?.text) askSelection(target); else reveal();}
+  function open(target) {
+    if (target?.text) askSelection(target);
+    else {session.expandComposer(); reveal();}
+  }
   function reveal() {
     if (disposed) return;
     const quote = session.getSnapshot().quote;
     if (!detached && quote?.key && quote.key !== plugin.getCurrentDocumentIdentity().key) session.setQuote(null);
-    session.show(); provider.setActive(true); ui?.focusComposer();
+    session.show(); ui?.focusComposer();
   }
   function restore(payload) {
     if (disposed) return;
@@ -153,10 +198,14 @@ export function createWorkspaceChat(plugin,options = {}) {
     if (session.getSnapshot().sending || session.getSnapshot().responding) throw Error("请等当前回答结束后再切换历史问答。");
     if (transferring || openingHistory) throw Error("正在切换问答，请稍候。");
     openingHistory = true;
+    syncWebView();
     try {
       const reply = await provider.openHistory(url);
       if (!disposed) restoreHistory(reply);
-    } finally {openingHistory = false;}
+    } finally {
+      openingHistory = false;
+      if (!disposed) syncWebView();
+    }
   }
   function restoreHistory(reply) {
     const current = session.export();
@@ -195,22 +244,26 @@ export function createWorkspaceChat(plugin,options = {}) {
     }
     session.notify("已插入原文档，可使用 Ctrl+Z 撤销。");
   }
+  let visible = false;
   const unsubscribe = session.subscribe(() => {
     const state = session.getSnapshot();
     node.hidden = !state.visible;
+    if (visible !== state.visible) {
+      visible = state.visible;
+      refreshDock();
+    }
     // Creating a plugin for another Markdown window must not load another
     // DeepSeek browser until the user actually opens this workspace.
-    if (state.visible && !webpage.isConnected) node.insertBefore(webpage,app);
-    provider.setActive(state.visible && !state.sending);
-    webpage.style.opacity = state.view === "web" ? "1" : ".01";
-    if (state.sending) webpage.blur();
-    webpage.style.pointerEvents = state.view === "web" && !state.sending ? "auto" : "none";
-    webpage.style.zIndex = state.view === "web" ? "1" : "0";
+    if (state.visible && !webpage.isConnected) webFrame.appendChild(webpage);
+    syncWebView(state);
+    const follow = state.view === "chat" && session.hasPendingReply() ? state.conversationURL : null;
+    provider.setActive(state.visible && !state.sending,follow);
   });
   // An answer that settles while the user reads elsewhere deserves a cue:
   // a local toast in this window, or a relay to the document window when the
   // conversation lives in the detached window.
   const notifyAnswerSettled = () => {
+    if (session.hasPendingReply()) return;
     let focused = true;
     try { focused = view.hasFocus(); } catch (_) {}
     writeDiagnostic(runtime,"answer-settled.json",{focused,detached,time:new Date().toISOString()});
@@ -227,14 +280,23 @@ export function createWorkspaceChat(plugin,options = {}) {
       insert,reload:() => provider.reload(),pause:value => provider.setPaused(value),
       opacity:value => options.onOpacity?.(value),
       launcherVisible:value => setLauncherVisible(value),
+      readingLayout:value => {
+        if (!appearance.saveReadingLayout(value)) throw Error("阅读布局保存失败，请重试。");
+        readingLayout = value;
+        refreshDock();
+      },
+      focusComposer:() => ui?.focusComposer(),
       pin:value => options.onPin?.(value),
       onAnswerSettled:notifyAnswerSettled,
       motionStats:stats => writeDiagnostic(runtime,"drag-performance.json",stats),
       startDrag,drag:moveDrag,endDrag,
       startResize:(rect,edge) => startInteraction(rect,"resize",edge),endResize:endDrag,
       getPosition:() => node.getBoundingClientRect(),
+      getDockResizeRange:dock.range,
+      getDockSize:() => dockSize,
       resize:(width,left) => {
         if (detached) return;
+        if (dock.position === "right") {dockWidth = width; applyGeometry(); return;}
         if (interaction?.type === "resize") {
           interaction.width = width; interaction.left = left;
           geometry = {...geometry,width,left}; applyGeometry();
@@ -242,18 +304,23 @@ export function createWorkspaceChat(plugin,options = {}) {
       },
       resizeHeight:(height,top) => {
         if (detached) return;
+        if (dock.position === "bottom") {dockHeight = height; applyGeometry(); return;}
         if (interaction?.type === "resize") {
           interaction.height = height; interaction.top = top;
         }
         geometry = {...geometry,height,top}; applyGeometry();
       },
-      webBounds:rect => {const outer = node.getBoundingClientRect(); if (rect.height > 0) {webpage.style.top = `${rect.top - outer.top}px`; webpage.style.height = `${rect.height}px`; }},
+      webBounds:rect => {
+        if (rect.height <= 0) return;
+        webBounds = {top:`${rect.top - node.getBoundingClientRect().top}px`,height:`${rect.height}px`};
+        syncWebView();
+      },
       width:value => {if (!detached) {geometry.width = value; applyGeometry();}},
       height:value => {if (!detached) {geometry.height = value; applyGeometry();}}
     }});
   const launch = view.createElement("button");
   launch.id = "deepseek-workspace-launch"; launch.textContent = "✦ DeepSeek 问答";
-  launch.style.cssText = "position:fixed;bottom:70px;right:18px;z-index:999980;border:1px solid #7180a555;border-radius:10px;padding:8px 13px;background:var(--bg-color,#fff);color:var(--text-color,#253047);cursor:pointer";
+  launch.style.cssText = `position:fixed;bottom:70px;right:18px;z-index:${workspaceLayer - 1};border:1px solid #7180a555;border-radius:10px;padding:8px 13px;background:var(--bg-color,#fff);color:var(--text-color,#253047);cursor:pointer`;
   function setLauncherVisible(value) {launch.hidden = !value; launch.style.display = value ? "" : "none";}
   const refreshLauncher = () => setLauncherVisible(appearance.loadLauncherVisible());
   refreshLauncher();
@@ -263,20 +330,44 @@ export function createWorkspaceChat(plugin,options = {}) {
     const selected = pressedTarget || tracker?.capture(); pressedTarget = null;
     if (selected?.text) askSelection(selected);
     else if (options.isDetachedActive?.()) void options.onReveal().catch(error => session.report(error));
-    else reveal();
+    else open();
   });
   if (!detached) view.body.appendChild(launch);
   const disposeMenu = detached ? null : registerDeepSeekMenu(plugin.app.workspace,() => tracker.capture({fresh:true}),open);
   const keydown = event => {
-    if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "i" && host.isEditorTarget(event.target)) {
+    const dockFocused = visible && dock.position && (event.target === view.body || node.contains(event.target));
+    if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "i" && (host.isEditorTarget(event.target) || dockFocused)) {
       event.preventDefault(); event.stopImmediatePropagation(); open(tracker.capture({fresh:true}));
     }
   };
   if (!detached) view.addEventListener("keydown",keydown,true);
+  const styleProbe = view.createElement("div").style;
+  function frameStyle(value) {
+    styleProbe.cssText = value || "";
+    // The community framework writes these after its editor pane reflows.
+    // They describe the reserved space and must not trigger another layout.
+    for (const property of ["top","left","width","height"]) styleProbe.removeProperty(`--typ-editor-${property}`);
+    return styleProbe.cssText;
+  }
+  function frameChanged(record) {
+    if (record.type === "attributes") {
+      const current = record.target.getAttribute(record.attributeName);
+      if (record.attributeName === "style") return frameStyle(current) !== frameStyle(record.oldValue);
+      return current !== record.oldValue;
+    }
+    return [...record.addedNodes,...record.removedNodes].some(element => element.matches?.("content,.typ-workspace-root"));
+  }
+  const observeLayout = !detached && typeof runtime.MutationObserver === "function" ? new runtime.MutationObserver(records => {
+    if (!visible || readingLayout === "floating") return;
+    if (records.some(frameChanged)) refreshDock();
+  }) : null;
+  const frameAttributes = {attributes:true,attributeOldValue:true,attributeFilter:["class","style"]};
+  observeLayout?.observe(view.body,{...frameAttributes,childList:true});
+  observeLayout?.observe(view.documentElement,frameAttributes);
   runtime.addEventListener("resize",viewportResize);
   diagnose("loaded");
   return {open,askSelection,reveal,restore,insertFromRemote:insert,dispose() {
-    disposed = true; unsubscribe(); tracker?.dispose(); provider.dispose(); session.dispose(); ui.dispose();
+    disposed = true; unsubscribe(); observeLayout?.disconnect(); dock.clear(); tracker?.dispose(); provider.dispose(); session.dispose(); ui.dispose();
     interaction = null;
     runtime.removeEventListener("resize",viewportResize);
     runtime.removeEventListener("focus",refreshLauncher);

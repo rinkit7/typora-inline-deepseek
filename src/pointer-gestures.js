@@ -3,11 +3,13 @@
 export function createPointerGestures({shadow,actions,appearance,detached,runtime = window}) {
   let size = {width:appearance.loadReaderWidth(),height:appearance.loadReaderHeight?.() ?? 640}, active = null, frame = null, pending = null;
   let timer = null, saveWidth = null, saveHeight = null, report = null, disposed = false;
+  const dockSizes = new Map();
   const listeners = new Set(), bindings = [];
   const now = () => runtime.performance.now();
   const pathOf = event => event.composedPath();
   function handleOf(event) {
-    return pathOf(event).find(node => node?.getRootNode?.() === shadow && node.matches?.(".ds-header,.ds-resize-edge"));
+    const selector = actions.getDockResizeRange?.() ? ".ds-resize-edge" : ".ds-header,.ds-resize-edge";
+    return pathOf(event).find(node => node?.getRootNode?.() === shadow && node.matches?.(selector));
   }
   function isControl(event,handle) {
     for (const node of pathOf(event)) {
@@ -20,15 +22,21 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
   const matches = event => active && (active.id == null || event.pointerId == null || event.pointerId === active.id);
   const vertical = edge => edge === "top" || edge === "bottom";
   const edgeOf = handle => ["left","right","top","bottom"].find(edge => handle.classList.contains(`ds-resize-${edge}`));
-  const publish = (edge,value) => {size = {...size,[vertical(edge) ? "height" : "width"]:value}; for (const callback of listeners) callback();};
-  function rememberSize(edge,value) {
-    publish(edge,value);
-    if (vertical(edge)) saveHeight = value; else saveWidth = value;
+  const publish = (edge,value,docked) => {
+    size = docked ? {...size} : {...size,[vertical(edge) ? "height" : "width"]:value};
+    for (const callback of listeners) callback();
+  };
+  function rememberSize(edge,value,docked) {
+    publish(edge,value,docked);
+    if (docked) dockSizes.set(edge,value);
+    else if (vertical(edge)) saveHeight = value; else saveWidth = value;
   }
   function settle() {
     timer = null;
     if (saveWidth !== null) {appearance.saveReaderWidth(saveWidth); saveWidth = null;}
     if (saveHeight !== null) {appearance.saveReaderHeight?.(saveHeight); saveHeight = null;}
+    for (const [edge,value] of dockSizes) appearance.saveDockSize?.(edge,value);
+    dockSizes.clear();
     if (report) {actions.motionStats?.(report); report = null;}
   }
   function defer() {if (timer !== null) runtime.clearTimeout(timer); timer = runtime.setTimeout(settle,120);}
@@ -58,7 +66,10 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
     const origin = isVertical ? start.top : start.left, extent = isVertical ? start.height : start.width;
     const end = origin + extent, viewport = isVertical ? runtime.innerHeight : runtime.innerWidth;
     const maximum = Math.max(0,Math.min(isVertical ? 12000 : 640,viewport - 36,leading ? end - 18 : viewport - 18 - origin));
-    const value = Math.round(Math.max(Math.min(isVertical ? 320 : 300,maximum),Math.min(maximum,extent + (leading ? -delta : delta))));
+    const dock = actions.getDockResizeRange?.();
+    const min = dock?.min ?? Math.min(isVertical ? 320 : 300,maximum);
+    const max = dock?.max ?? maximum;
+    const value = Math.max(min,Math.min(max,Math.round(extent + (leading ? -delta : delta))));
     if (isVertical) actions.resizeHeight(value,leading ? end - value : origin);
     else actions.resize(value,leading ? end - value : origin);
     return value;
@@ -69,7 +80,7 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
     const current = active; active = null;
     try {
       if (current.edge) {
-        actions.endResize?.(); rememberSize(current.edge,current.size);
+        actions.endResize?.(); rememberSize(current.edge,current.size,current.docked);
       } else actions.endDrag?.();
     } finally {
       current.shield.remove();
@@ -96,7 +107,7 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
     shield.setAttribute("aria-hidden","true");
     shadow.ownerDocument.body.appendChild(shield);
     shadow.querySelector(".ds-settings")?.removeAttribute("open");
-    active = {source,shield,edge,rect,x:event.clientX,y:event.clientY,size:vertical(edge) ? size.height : size.width,
+    active = {source,shield,edge,rect,x:event.clientX,y:event.clientY,size:vertical(edge) ? rect.height : rect.width,docked:!!actions.getDockResizeRange?.(),
       id:event.pointerId ?? null,started:now(),moves:0,mouseEvents:0,frames:0,slowFrames:0,maxFrameGapMs:0,maxQueueMs:0,lastFrame:null};
     if (edge) actions.startResize?.(rect,edge); else actions.startDrag?.(rect);
     if (active.id != null) source.setPointerCapture?.(active.id);
@@ -126,7 +137,7 @@ export function createPointerGestures({shadow,actions,appearance,detached,runtim
     if (!keys.includes(event.key)) return;
     stop(event);
     const value = resizeTo(edge,actions.getPosition(),(event.key === keys[0] ? -1 : 1) * (event.shiftKey ? 40 : 10));
-    rememberSize(edge,value); defer();
+    rememberSize(edge,value,!!actions.getDockResizeRange?.()); defer();
   }
   function bind(name,handler) {runtime.addEventListener(name,handler,{capture:true,passive:false}); bindings.push([name,handler]);}
   bind("pointerdown",start); bind("pointermove",move);

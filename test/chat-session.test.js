@@ -24,22 +24,26 @@ test("quoted context is visible state and is included in exactly the submitted t
 test("new quote or draft selected during an in-flight send is not lost on confirmation", async () => {
   let finish;
   const session = createChatSession({provider:{send:() => new Promise(resolve => {finish = resolve;})}});
+  session.setDockPosition("bottom");
   session.askSelection({text:"old",targetId:"old"});
   const pending = session.submit();
   session.setDraft("next draft"); session.askSelection({text:"new",targetId:"new"});
   finish({baseline:{count:0,text:""}}); await pending;
   const state = session.getSnapshot();
   assert.equal(state.draft,"next draft"); assert.equal(state.quote.text,"new");
+  assert.equal(state.composerCollapsed,false);
   assert.equal(state.messages[0].quote.text,"old"); assert.equal(state.messages[1].targetId,"old");
   session.dispose();
 });
 
 test("failed sends preserve quote and draft and do not invent a completed user turn", async () => {
   const session = createChatSession({provider:{send:async () => {const error = Error("请登录"); error.code = "LOGIN_REQUIRED"; throw error;}}});
+  session.setDockPosition("bottom");
   session.askSelection({text:"retained"});
   assert.equal(await session.submit(),false);
   assert.equal(session.getSnapshot().quote.text,"retained");
   assert.equal(session.getSnapshot().draft,"解释这段内容");
+  assert.equal(session.getSnapshot().composerCollapsed,false);
   assert.equal(session.getSnapshot().messages.length,0); assert.equal(session.getSnapshot().view,"web");
   session.dispose();
 });
@@ -49,13 +53,13 @@ test("one conversation state survives view changes and serialized window transfe
   const origin = createChatSession({provider});
   origin.askSelection({text:"source",label:"a.md",targetId:"target"}); await origin.submit();
   origin.receive({count:1,text:"**answer**",generating:false});
-  origin.setDraft("next"); origin.setView("web"); origin.setTransparent(true);
+  origin.setDraft("next"); origin.setView("web"); origin.setDockPosition("right");
   const child = createChatSession({provider}); child.restore(JSON.parse(JSON.stringify(origin.export())));
   assert.equal(child.getSnapshot().messages[0].quote.text,"source");
   assert.equal(child.getSnapshot().messages[1].text,"**answer**");
   child.receive({count:1,text:"stale reply from the reloaded page"});
   assert.equal(child.getSnapshot().messages[1].text,"**answer**");
-  assert.equal(child.getSnapshot().draft,"next"); assert.equal(child.getSnapshot().transparent,true);
+  assert.equal(child.getSnapshot().draft,"next"); assert.equal(child.getSnapshot().dockPosition,null);
   child.setView("chat"); assert.equal(child.getSnapshot().draft,"next");
   child.askSelection({text:"other",targetId:"another"}); assert.equal(child.getSnapshot().messages.length,2);
   origin.dispose(); child.dispose();
@@ -120,5 +124,26 @@ test("switching the guest conversation during generation cannot attach that page
     assert.equal(session.getSnapshot().conversationURL,url);
     assert.equal(session.getSnapshot().responding,false);
     assert.match(session.getSnapshot().error,/会话已切换/);
+  } finally {session.dispose();}
+});
+
+test("a reply arriving after the wait notice can still fill its own turn", async () => {
+  const url = "https://chat.deepseek.com/a/chat/s/current";
+  let now = 0;
+  const session = createChatSession({provider:{send:async () => ({url,baseline:{key:"row:previous",count:1}})},clock:() => now});
+  try {
+    await session.submit("question");
+    now = 91000;
+    session.receive({url,key:"row:previous",text:"previous answer",generating:true});
+    assert.equal(session.getSnapshot().responding,true);
+    session.receive({url,key:"row:previous",text:"previous answer",generating:false});
+    assert.equal(session.getSnapshot().responding,false);
+    assert.equal(session.getSnapshot().messages.at(-1).text,"");
+    session.receive({url,key:"row:new",text:"late answer",generating:false,atEnd:true});
+    now = 94000;
+    session.receive({url,key:"row:new",text:"late answer",generating:false,atEnd:true});
+    assert.equal(session.getSnapshot().messages.at(-1).text,"late answer");
+    assert.equal(session.getSnapshot().responding,false);
+    assert.equal(session.getSnapshot().notice,"回答已同步");
   } finally {session.dispose();}
 });

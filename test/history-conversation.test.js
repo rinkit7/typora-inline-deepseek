@@ -94,17 +94,19 @@ test('the first live poll must not replace an earlier history answer with the ne
   });
 });
 
-function virtualHistory(rows,{viewport = 300,initialTop,delay = () => 0} = {}) {
-  const env = browserEnvironment('<body><main><div>Page title Page title</div><div class="ds-virtual-list"><div class="ds-virtual-list-visible-items"></div></div><textarea></textarea><div>AI disclaimer</div></main></body>');
-  const list = env.document.querySelector('.ds-virtual-list'), items = list.firstElementChild;
-  let totalHeight = 0, timer;
+function virtualHistory(rows,{viewport = 300,initialTop,delay = () => 0,leading = 0,trailing = 0} = {}) {
+  const env = browserEnvironment('<body><main><div>Page title Page title</div><div class="ds-virtual-list"><div class="ds-virtual-list-items"><div class="ds-virtual-list-visible-items"></div></div></div><textarea></textarea><div>AI disclaimer</div></main></body>');
+  const list = env.document.querySelector('.ds-virtual-list'), track = list.firstElementChild, items = track.firstElementChild;
+  let messageEnd = leading, timer;
   const bounds = rows.map(row => {
-    const top = totalHeight;
-    totalHeight += row.height;
-    return {...row,top,bottom:totalHeight};
+    const top = messageEnd;
+    messageEnd += row.height;
+    return {...row,top,bottom:messageEnd};
   });
+  const totalHeight = messageEnd + trailing;
   const maxTop = Math.max(0,totalHeight - viewport);
   let position = initialTop ?? maxTop;
+  track.getBoundingClientRect = () => ({top:leading - position,bottom:messageEnd - position});
   const render = () => {
     const mounted = bounds.filter(row => row.top < position + viewport && row.bottom > position);
     items.innerHTML = mounted.map(row => `<div data-virtual-list-item-key="${row.key}">${row.html}</div>`).join('');
@@ -160,6 +162,19 @@ test('scrolling to the bottom waits for mounted rows to actually cover the botto
   } finally {dispose();}
 });
 
+test('history reads every turn when non-message space surrounds the virtual message track', async () => {
+  const {list,maxTop,reader,dispose} = virtualHistory(virtualTurns(2,80),{
+    viewport:120,initialTop:200,leading:64,trailing:240
+  });
+  try {
+    const result = await reader.history();
+    assert.deepEqual(result.messages.map(message => message.text),['question 1','answer 1','question 2','answer 2']);
+    assert.equal(result.atEnd,true);
+    assert.equal(list.scrollTop,264,'stop where the last message is visible rather than inside the trailing empty space');
+    assert.ok(list.scrollTop < maxTop);
+  } finally {dispose();}
+});
+
 test('history locates and scans a virtual viewport containing only a tall user question', async () => {
   const rows = virtualTurns(1);
   rows[0].height = 680;
@@ -182,6 +197,44 @@ test('sending from an earlier position waits for the latest mounted reply for it
     assert.equal(baseline.text,'answer 2');
     assert.equal(baseline.atEnd,true);
     assert.equal(list.scrollTop,maxTop);
+  } finally {dispose();}
+});
+
+test('live sync accepts a long final answer while the webpage is still scrolled to its question', async () => {
+  const rows = virtualTurns(2,120);
+  rows.at(-1).height = 900;
+  const {list,reader,dispose} = virtualHistory(rows,{viewport:250,initialTop:240,trailing:64});
+  const url = 'https://typora.local/';
+  const session = createChatSession({provider:{send:async () => ({url,baseline:{key:'row:a1',count:1}})}});
+  try {
+    await session.submit('question 2');
+    const result = reader.reply();
+    assert.equal(result.text,'answer 2');
+    assert.equal(result.atEnd,false);
+    session.receive(result);
+    assert.equal(session.getSnapshot().messages.at(-1).text,'answer 2');
+    assert.equal(list.scrollTop,240,'a mounted final answer does not require scrolling');
+  } finally {session.dispose(); dispose();}
+});
+
+test('background reply sync loads offscreen messages without using stale rows or scrolling another conversation', async () => {
+  const rows = virtualTurns(2,80);
+  rows.at(-1).html = '<div class="ds-assistant-message-main-content"><p>answer 2</p><p>more content</p></div>';
+  const {list,reader,dispose} = virtualHistory(rows,{viewport:120,initialTop:40,trailing:240,delay:() => 100});
+  const url = 'https://typora.local/', address = location => location.href;
+  try {
+    assert.deepEqual(reader.followReply(url + 'other',address),{url});
+    assert.equal(list.scrollTop,40);
+    const stale = reader.followReply(url,address);
+    assert.equal(stale.text,'answer 1');
+    assert.equal(stale.latest,false);
+    assert.equal(list.scrollTop,200);
+    assert.equal(reader.reply().latest,false,'scrollTop can change before the final row is rendered');
+    await new Promise(resolve => setTimeout(resolve,120));
+    const result = reader.followReply(url,address);
+    assert.equal(result.key,'row:a2');
+    assert.match(result.text,/^answer 2\s+more content$/);
+    assert.equal(result.latest,true);
   } finally {dispose();}
 });
 

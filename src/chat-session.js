@@ -1,7 +1,7 @@
 import {buildWebQuestion} from "./web-provider.js";
 
 export function createChatSession({provider,clock = () => Date.now()} = {}) {
-  let state = {messages:[],draft:"",quote:null,contextTargetId:null,conversationURL:null,sending:false,responding:false,error:"",notice:"",view:"chat",transparent:false,visible:false};
+  let state = {messages:[],draft:"",quote:null,contextTargetId:null,conversationURL:null,sending:false,responding:false,error:"",notice:"",view:"chat",dockPosition:null,composerCollapsed:false,visible:false};
   let sequence = 0, pending = null, disposed = false, importLatest = true;
   const listeners = new Set();
   const messageIds = new Set();
@@ -28,12 +28,11 @@ export function createChatSession({provider,clock = () => Date.now()} = {}) {
     }
     const now = clock();
     const key = replyKey(reply);
-    const isNewAnswer = key && reply.atEnd !== false && (key.startsWith("row:") ? key !== turn.baselineKey : reply.count > turn.baselineCount);
+    const isNewAnswer = key && (reply.latest ?? reply.atEnd !== false) && (key.startsWith("row:") ? key !== turn.baselineKey : reply.count > turn.baselineCount);
     const matches = turn.key ? key === turn.key : isNewAnswer;
     if (!reply?.text || !matches) {
-      if (now - turn.changedAt > 90000) {
-        pending = null;
-        publish({responding:false,notice:"网页暂未返回回答，可切换“网页”查看。"});
+      if (state.responding && !reply?.generating && now - turn.changedAt > 90000) {
+        publish({responding:false,notice:"暂未同步到网页回答，可切换“网页”查看。"});
       }
       return;
     }
@@ -41,21 +40,23 @@ export function createChatSession({provider,clock = () => Date.now()} = {}) {
     if (turn.lastText !== reply.text) {turn.changedAt = now; turn.lastText = reply.text;}
     const running = !!reply.generating || now - turn.changedAt < 2500;
     if (!running) pending = null;
-    if (state.responding === running && state.messages.find(message => message.id === turn.id)?.text === reply.text) return;
+    if (running && state.responding && state.messages.find(message => message.id === turn.id)?.text === reply.text) return;
     const messages = state.messages.map(message => message.id === turn.id ? {...message,text:reply.text} : message);
     publish({messages,responding:running,notice:running ? "DeepSeek 正在回答…" : "回答已同步"});
   }
   const unsubscribe = provider?.subscribe?.(receive);
   return {
     getSnapshot:() => state,
+    hasPendingReply:() => !!pending,
     subscribe(callback) {listeners.add(callback); return () => listeners.delete(callback);},
     setDraft:draft => publish({draft:String(draft)}),
-    setQuote(quote) {publish({quote:quote?.text ? {text:String(quote.text),label:String(quote.label || "正文选区"),key:quote.key,targetId:quote.targetId} : null,error:"",visible:true});},
+    setQuote(quote) {publish({quote:quote?.text ? {text:String(quote.text),label:String(quote.label || "正文选区"),key:quote.key,targetId:quote.targetId} : null,composerCollapsed:false,error:"",visible:true});},
     askSelection(quote) {
-      publish({quote:{text:String(quote.text),label:String(quote.label || "正文选区"),key:quote.key,targetId:quote.targetId},contextTargetId:quote.targetId,draft:state.draft || "解释这段内容",visible:true,error:""});
+      publish({quote:{text:String(quote.text),label:String(quote.label || "正文选区"),key:quote.key,targetId:quote.targetId},contextTargetId:quote.targetId,draft:state.draft || "解释这段内容",composerCollapsed:false,view:"chat",visible:true,error:""});
     },
     setView:view => publish({view:view === "web" ? "web" : "chat"}),
-    setTransparent:transparent => publish({transparent:!!transparent}),
+    setDockPosition(position) {if (state.dockPosition !== position) publish({dockPosition:position});},
+    expandComposer() {if (state.composerCollapsed) publish({composerCollapsed:false,view:"chat"});},
     show() {publish({visible:true});},
     hide() {publish({visible:false});},
     report(error) {publish({error:String(error?.message || error)});},
@@ -76,7 +77,10 @@ export function createChatSession({provider,clock = () => Date.now()} = {}) {
         const assistant = {id:id(),role:"assistant",text:"",targetId};
         const url = result.url || conversationURL;
         pending = {id:assistant.id,url,baselineKey:replyKey(result.baseline),baselineCount:result.baseline?.count || 0,lastText:"",changedAt:clock()};
-        publish({messages:[...state.messages,user,assistant],conversationURL:url,draft:state.draft.trim() === question ? "" : state.draft,quote:state.quote === quote ? null : state.quote,sending:false,responding:true,notice:"问题已发送，等待回答…"});
+        const draft = state.draft.trim() === question ? "" : state.draft;
+        const remainingQuote = state.quote === quote ? null : state.quote;
+        publish({messages:[...state.messages,user,assistant],conversationURL:url,draft,quote:remainingQuote,
+          composerCollapsed:!!state.dockPosition && !draft.trim() && !remainingQuote,sending:false,responding:true,notice:"问题已发送，等待回答…"});
         return true;
       } catch (error) {
         publish({sending:false,error:error.message || String(error),view:error.code === "LOGIN_REQUIRED" ? "web" : state.view,notice:""});
@@ -96,9 +100,9 @@ export function createChatSession({provider,clock = () => Date.now()} = {}) {
         const key = typeof message.id === "string" && message.id && !assigned.has(message.id) ? message.id : id();
         assigned.add(key); return {...message,id:key};
       });
-      publish({messages,conversationURL:data?.conversationURL || null,draft:String(data?.draft || ""),quote:data?.quote?.text ? data.quote : null,contextTargetId:data?.contextTargetId || null,transparent:!!data?.transparent,view:data?.view === "web" ? "web" : "chat",visible:true,sending:false,responding:false,error:"",notice:"已恢复会话"});
+      publish({messages,conversationURL:data?.conversationURL || null,draft:String(data?.draft || ""),quote:data?.quote?.text ? data.quote : null,contextTargetId:data?.contextTargetId || null,composerCollapsed:false,view:data?.view === "web" ? "web" : "chat",visible:true,sending:false,responding:false,error:"",notice:"已恢复会话"});
     },
-    clear() {pending = null; messageIds.clear(); publish({messages:[],draft:"",quote:null,error:"",responding:false});},
+    clear() {pending = null; messageIds.clear(); publish({messages:[],draft:"",quote:null,composerCollapsed:false,error:"",responding:false});},
     dispose() {disposed = true; unsubscribe?.(); listeners.clear();}
   };
 }

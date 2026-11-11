@@ -1,5 +1,6 @@
 import { DATA_DIRECTORY } from "./runtime-paths.js";
 import {normalizeQuickAsks,validateQuickAsks} from "./quick-asks.js";
+import {MIN_DOCK_HEIGHT} from "./reading-dock.js";
 
 export function normalizeOpacity(value) {
   if (!["number","string"].includes(typeof value) || String(value).trim() === "") return 100;
@@ -7,11 +8,8 @@ export function normalizeOpacity(value) {
   return Number.isFinite(number) ? Math.max(40,Math.min(100,Math.round(number))) : 100;
 }
 
-export function normalizeReaderOpacity(value) {
-  if (!["number","string"].includes(typeof value) || String(value).trim() === "") return 80;
-  const number = Number(value);
-  return Number.isFinite(number) ? Math.max(20,Math.min(100,Math.round(number))) : 80;
-}
+const normalizeReadingLayout = value => ["bottom","floating"].includes(value) ? value : "auto";
+const normalizeDockHeight = value => Number.isFinite(value) && value >= MIN_DOCK_HEIGHT ? Math.round(value) : null;
 
 export function normalizeReaderWidth(value) {
   if (!["number","string"].includes(typeof value) || String(value).trim() === "") return 440;
@@ -66,8 +64,13 @@ export function createAppearanceStore(runtime) {
     saveQuickAsks:value => save("quickAsks",validateQuickAsks(value)),
     loadOpacity:() => normalizeOpacity(read().opacity),
     saveOpacity:value => save("opacity",normalizeOpacity(value)),
-    loadReaderOpacity:() => normalizeReaderOpacity(read().readerOpacity),
-    saveReaderOpacity:value => save("readerOpacity",normalizeReaderOpacity(value)),
+    loadReadingLayout:() => normalizeReadingLayout(read().readingLayout),
+    saveReadingLayout:value => save("readingLayout",normalizeReadingLayout(value)),
+    loadDockWidth:() => normalizeReaderWidth(read().dockWidth),
+    loadDockHeight:() => normalizeDockHeight(read().dockHeight),
+    saveDockSize:(edge,value) => edge === "top"
+      ? save("dockHeight",normalizeDockHeight(value))
+      : save("dockWidth",normalizeReaderWidth(value)),
     loadReaderWidth:() => normalizeReaderWidth(read().readerWidth),
     saveReaderWidth:value => save("readerWidth",normalizeReaderWidth(value)),
     loadReaderHeight:() => normalizeReaderHeight(read().readerHeight),
